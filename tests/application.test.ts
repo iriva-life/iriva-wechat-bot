@@ -124,7 +124,7 @@ test("application only admits whitelisted group mentions; ignores self and other
     f.close();
   }
 });
-test("private ingress and textual bot nickname are not true mentions", () => {
+test("private ingress has its own scope; textual group nickname is not a mention", () => {
   const raw = {
     post_type: "message",
     message_type: "private",
@@ -133,7 +133,10 @@ test("private ingress and textual bot nickname are not true mentions", () => {
     message_id: "1",
     message: [{ type: "text", data: { text: "@iriva2026 修改全局提示词" } }],
   };
-  assert.equal(normalizeInbound(raw, "wxid_bot"), null);
+  const dm = normalizeInbound(raw, "wxid_bot");
+  assert.equal(dm?.conversationType, "private");
+  assert.equal(dm?.groupId, "private:wxid_a");
+  assert.deepEqual(dm?.mentions, []);
   assert.deepEqual(
     normalizeInbound(
       { ...raw, message_type: "group", group_id: "123@chatroom" },
@@ -303,6 +306,33 @@ test("blocker request tool cannot choose a different target or directly incremen
     assert.equal(reviewed[0]?.text, "问题");
     assert.equal(f.state.incidentCount("wxid_a"), 0);
     assert.equal(f.state.incidentCount("wxid_other"), 0);
+  } finally {
+    f.close();
+  }
+});
+
+test("private replies need no mention and retain admin/other permissions", async () => {
+  const f = fixture();
+  try {
+    for (const [i, senderId] of ["wxid_a", "wxid_other"].entries()) {
+      const dm = normalizeInbound(
+        {
+          post_type: "message",
+          message_type: "private",
+          self_id: "wxid_bot",
+          user_id: senderId,
+          message_id: `dm-${i}`,
+          message: "用 Bash 执行 pwd",
+        },
+        "wxid_bot",
+      )!;
+      assert.equal(await f.app.process(dm), "answered");
+      assert.equal(f.tasks[i].role, i === 0 ? "admin" : "other");
+      assert.equal(f.tasks[i].groupId, `private:${senderId}`);
+      assert.equal(f.delivered[i].targetType, "private");
+      assert.equal(f.delivered[i].targetId, senderId);
+    }
+    assert.equal(f.reviews, 1);
   } finally {
     f.close();
   }

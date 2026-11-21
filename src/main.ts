@@ -4,6 +4,7 @@ import { loadConfig } from "./config.js";
 import { Inbox } from "./inbox.js";
 import { StateStore } from "./policy/index.js";
 import { BotApplication, applicationTools } from "./application.js";
+import { bindDirectoryAdmins } from "./admin-directory.js";
 import {
   createProcessAgentOrchestrator,
   type AgentTask,
@@ -102,7 +103,7 @@ try {
     tools: applicationTools(db, reviewCurrent),
     getGlobalPrompt: () =>
       db.getDocument("prompt", "global")?.value ??
-      "你叫 IRIVA，在微信群里帮助大家解答问题。回复清晰、简洁。",
+      "你叫 IRIVA，通过微信私聊和群聊帮助大家解答问题。回复清晰、简洁。",
     getContext: (task) =>
       [
         db.getDocument("context", "global")?.value,
@@ -136,6 +137,22 @@ try {
     void drain().catch(report);
   };
   app = new BotApplication({ config, state: db, inbox, agents, deliver });
+  let lastDirectoryAttempt = 0;
+  const refreshAdmins = async () => {
+    if (
+      !db.unresolvedAdminAliases().length ||
+      Date.now() - lastDirectoryAttempt < 60_000
+    )
+      return;
+    lastDirectoryAttempt = Date.now();
+    try {
+      const directory = await client!.request("get_contact_directory");
+      const count = bindDirectoryAdmins(db, directory, config.botWxid);
+      if (count) log("admin_directory_bound", { count });
+    } catch {
+      log("admin_directory_pending");
+    }
+  };
   client = new OneBotClient({
     baseUrl: required("ONEBOT_URL"),
     token: required("ONEBOT_TOKEN"),
@@ -143,6 +160,7 @@ try {
     onError: report,
     onReady: async () => {
       log("bridge_connected", { dryRun: config.dryRun });
+      await refreshAdmins();
       await app.notifyAdmins();
       void drain().catch(report);
     },
@@ -155,6 +173,14 @@ try {
       queued++;
       work = work
         .then(async () => {
+          if (
+            !stopping &&
+            (m.conversationType === "private" ||
+              (config.allowedGroupIds.includes(m.groupId) &&
+                m.mentions.includes(config.botWxid)))
+          ) {
+            await refreshAdmins();
+          }
           if (!stopping) await app.process(m);
         })
         .catch(report)
@@ -167,12 +193,16 @@ try {
     authorize: (d) =>
       d.targetType === "group"
         ? config.allowedGroupIds.includes(d.targetId)
-        : db.roleFor(d.targetId) === "admin" &&
-          db.mayDeliverNotification(d.id.split(":")[1] ?? "", d.targetId),
+        : d.targetType === "private"
+          ? db.roleFor(d.targetId) !== "blocker"
+          : db.roleFor(d.targetId) === "admin" &&
+            db.mayDeliverNotification(d.id.split(":")[1] ?? "", d.targetId),
     send: (d) =>
       d.targetType === "group"
         ? client!.sendGroup(d.targetId, d.text)
-        : client!.sendAdmin(d.targetId, d.text),
+        : d.targetType === "private"
+          ? client!.sendPrivate(d.targetId, d.text)
+          : client!.sendAdmin(d.targetId, d.text),
   });
   timer = setInterval(() => {
     void drain().catch(report);

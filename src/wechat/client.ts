@@ -171,8 +171,11 @@ export class OneBotClient {
   }
   /** Host must validate that recipient is currently an admin before calling. */
   async sendAdmin(adminWxid: string, text: string): Promise<void> {
-    if (!isUserId(adminWxid)) throw new Error("Invalid admin wxid");
-    await this.send("/send_private_msg", { user_id: adminWxid }, text);
+    await this.sendPrivate(adminWxid, text);
+  }
+  async sendPrivate(userWxid: string, text: string): Promise<void> {
+    if (!isUserId(userWxid)) throw new Error("Invalid user wxid");
+    await this.send("/send_private_msg", { user_id: userWxid }, text);
   }
   private async send(
     path: string,

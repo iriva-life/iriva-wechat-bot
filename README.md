@@ -1,14 +1,16 @@
 # IRIVA 微信群助手
 
-Bot 微信号 `iriva2026`。管理员白名单为 `EnRomantice`、`quietfire1`。只在指定群被真正 @ 时回复；私聊输入、自己发出的消息、普通群消息和 blocker 消息全部忽略。主动私聊仅用于向管理员发送拉黑审核通知。
+Bot 微信号 `iriva2026`。管理员白名单为 `EnRomantice`、`quietfire1`。私聊直接回复；指定群只在被真正 @ 时回复。自己发出的消息、普通群消息和 blocker 消息忽略。两种会话共用管理员权限和违规规则；拉黑审核申请通过私聊通知管理员。
 
 ## 当前状态
 
-应用实现和模拟端到端验证已完成。Mac mini 已部署程序及运行依赖，并从固定源码构建好 OneBot 桥接和暂存 Gadget，桥接自带测试通过。当前微信不是 bot，**未安装 Hook、未重签微信、未退出或切换账号、未启用常驻服务、未发送真实微信消息**。真实微信收发仍待测试。详细结果见 [验证记录](docs/VALIDATION.md)。
+应用实现和模拟端到端验证已完成。Mac mini 已部署程序及运行依赖，并从固定源码构建好 OneBot 桥接，桥接自带测试通过。2026-11-21 已通过远程桌面核验微信登录账号为 `iriva2026`，测试群为「IRIVA | 青鸟」。官方客户端备份已校验，Gadget 已安装，修改后的签名与 sandbox entitlement 检查通过。bot、EnRomantice 及测试群 ID 已核验绑定；quietfire1 保留白名单，待通讯录自动匹配。**bot 已在正式模式启动；真实发送初始化和私聊端到端验收仍在进行，尚未验证实际回复送达。** 详细结果见 [验证记录](docs/VALIDATION.md)。
+
+**双击启动、SSH/远程桌面、微信登录失败恢复流程：[MACMINI.md](MACMINI.md)。** 根目录 `启动 IRIVA.command` 为桌面入口源文件，`scripts/install-desktop-link.sh` 在 Mac mini 桌面创建链接。
 
 模型：OpenRouter `openai/gpt-5.6-luna`，Base URL `https://openrouter.ai/api/v1`。密钥在 Mac mini 项目根目录 `.env`（权限 0600），不提交源码。普通问题调用审核、工作、leader；工作工具调用可能增加模型轮次。
 
-验证：本机和 Mac mini 均通过 31 项自动测试，含真实应用入口 + 三个子进程 + 模拟 OneBot/模型的完整链路。两台机器均通过真实 OpenRouter 验证了审核、实际知识工具调用和 leader 回复。Mac mini 的旧代理配置已更新为本机当前 Rustdesk-server 快照，代理重启后 OpenRouter/npm 连通性验证通过；准备脚本也支持相同 OS/CPU 的离线依赖同步。
+验证：本机和 Mac mini 均通过 37 项自动测试，含真实应用入口 + 三个子进程 + 模拟 OneBot/模型的完整链路。两台机器均通过真实 OpenRouter 验证了审核、实际知识工具调用和 leader 回复。Mac mini 的旧代理配置已更新为本机当前 Rustdesk-server 快照，代理重启后 OpenRouter/npm 连通性验证通过；准备脚本也支持相同 OS/CPU 的离线依赖同步。
 
 ## 架构与目录
 
@@ -40,13 +42,13 @@ Bot 微信号 `iriva2026`。管理员白名单为 `EnRomantice`、`quietfire1`�
 
 ## 权限规则
 
-- **admin**：公开微信号必须通过可信资料精确绑定内部 wxid。可使用全部已实现应用工具：知识库读写、上下文设置/清空、全局 prompt、全局行为设置、拉黑申请审批/拒绝、解除黑名单。不存在隐式 Shell 或任意文件访问能力。管理员名单和身份绑定只能在本地配置手动修改。
+- **admin**：公开微信号采用本地白名单；程序自动用可信微信通讯录的真实 `alias` 匹配内部 wxid，不要求逐个手工校验。尚未出现在通讯录的白名单项保持待匹配，不阻塞运行。可列出知识库目录、读取/修改条目、设置/清空上下文、修改全局 prompt/行为、审批/拒绝拉黑和解除黑名单；还可明确请求 `admin_bash`，以 Mac mini 的 `ender` 用户运行 Bash（默认 30 秒、最长 60 秒，输出最多 16000 字符）。Bash 是实际主机权限，不是沙盒，能够修改该用户可访问的文件；不注入模型密钥、OneBot token 或 BASH_ENV，不提供 sudo 密码。管理员名单从本机配置加载，身份绑定可来自本机配置或已鉴权桥接通讯录，不能靠修改全局 prompt 提权。
 - **other**：默认角色。只获得 `knowledge_read`、`blocker_add_tools`；后者只能请求审核当前消息，不能指定他人、计次或直接拉黑。模型伪造工具调用也会被宿主权限校验拦截。
 - **blocker**：入口直接忽略，不调用模型。
 - 严重违规仅三类：明确窃取密钥/他人私密数据、绕过权限修改系统、破坏性操作。引用案例、正常讨论和一般拒绝不计次。审核输出必须包含原文精确证据；审核失败不计次。
 - 同一个 bot/message ID 只计一次；第 **4** 次生成待审申请，带证据通知所有已绑定 admin。绑定缺失的通知保持待处理。任何 admin 可批准/拒绝，批准才生效，其他 admin 的过期通知取消。模型审核并非绝对准确，管理员负责最终复核。
 - 管理员通知不能通过私聊回复处理；需在白名单群 @ bot 并提供申请 ID。公开群内不要粘贴私密证据，证据已在管理员通知中提供。
-- `behavior/global` 当前支持 `paused` 和 `maxReplyChars`（100–8000）。暂停时 admin 仍能调整设置。全局 prompt 可改变回答行为，不能改变代码权限、私聊禁用和 @ 规则。
+- `behavior/global` 当前支持 `paused` 和 `maxReplyChars`（100–8000）。暂停时 admin 仍能调整设置。全局 prompt 可改变回答行为，不能改变代码权限、群聊 @ 规则。
 
 ## 本地开发
 
@@ -76,7 +78,7 @@ npm run admin -- bind EnRomantice wxid_ADMIN1
 npm run admin -- bind quietfire1 wxid_ADMIN2
 ```
 
-这些是占位示例，不能直接照抄。随后填写 `config/local.json` 的真实 `allowedGroupIds`。默认 `dryRun:true`：调用模型并验证流程，但只记录草稿长度，不投递微信。核验通过后才改 `dryRun:false` 并运行 `bash scripts/run-macmini.sh`。提供 LaunchAgent 示例但没有加载；激活前完成微信收发验收。
+这些是可选的人工绑定占位示例，不能直接照抄；管理员也会自动匹配真实通讯录微信号，缺失映射不会阻塞其他已识别管理员使用。随后填写 `config/local.json` 的真实 `allowedGroupIds`。默认 `dryRun:true`：调用模型并验证流程，但只记录草稿长度，不投递微信。核验通过后才改 `dryRun:false` 并运行 `bash scripts/run-macmini.sh`。提供 LaunchAgent 示例但没有加载；激活前完成微信收发验收。
 
 ## 投递与恢复
 
@@ -90,7 +92,7 @@ OneBot 只有一个 WS 客户端且没有可靠离线补发，不能同时开启
 
 1. 确认登录 bot、自身 wxid、两个 admin 的 alias 映射，以及测试群 ID。
 2. 对比两名群成员的发送者 ID；普通文字 `@昵称`、@别人、@所有人不触发。
-3. 私聊不回复；真实 @ bot 正常问答；同一消息重放不重复回答。
+3. 私聊直接回复；群聊真实 @ bot 正常问答、无 @ 静默；同一消息重放不重复回答。
 4. other 无法改配置；两个 admin 均能管理应用；第四次经审核严重违规只申请、不自动拉黑。
 5. 两个 admin 都收到申请；批准后 blocker 忽略；拒绝不拉黑；解除可恢复。
 6. 分气泡顺序、长度节奏、断线、重启和不确定发送均按预期处理。

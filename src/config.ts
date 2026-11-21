@@ -64,12 +64,8 @@ export function loadConfig(
   }
   if (typeof c.dryRun !== "boolean")
     throw new Error("dryRun 必须显式设置 true/false");
-  if (
-    !c.dryRun &&
-    (!c.allowedGroupIds.length ||
-      c.adminAliases.some((a) => !aliases.has(a.toLowerCase())))
-  ) {
-    throw new Error("正式运行需配置群白名单并核验全部管理员 wxid");
+  if (!c.dryRun && !c.allowedGroupIds.length) {
+    throw new Error("正式运行需配置群白名单");
   }
   return c;
 }

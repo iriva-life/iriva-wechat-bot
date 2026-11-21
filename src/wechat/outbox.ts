@@ -6,7 +6,7 @@ import { bubbleDelay, splitBubbles, type PacingOptions } from "./bubbles.js";
 export class SafeRetryError extends Error {}
 export interface Delivery {
   id: string;
-  targetType: "group" | "admin";
+  targetType: "group" | "admin" | "private";
   targetId: string;
   text: string;
 }
@@ -45,7 +45,7 @@ export class BubbleOutbox {
     if (
       !delivery.id ||
       !delivery.targetId ||
-      !["group", "admin"].includes(delivery.targetType)
+      !["group", "admin", "private"].includes(delivery.targetType)
     )
       throw new Error("Invalid delivery");
     if (!this.options.authorize(delivery)) throw new Error("Delivery denied");

@@ -29,14 +29,14 @@ const event = {
     { type: "at", data: { qq: "wxid_bot" } },
   ],
 };
-test("normalizer preserves long IDs and structured mention; rejects private/self/mismatched/unsafe IDs", () => {
+test("normalizer preserves long IDs and structured mention; rejects self/mismatched/unsafe IDs", () => {
   assert.equal(
     normalizeInbound(event, "wxid_bot")?.messageId,
     event.message_id,
   );
   assert.deepEqual(normalizeInbound(event, "wxid_bot")?.mentions, ["wxid_bot"]);
   for (const patch of [
-    { message_type: "private" },
+    { message_type: "notice" },
     { is_self: true },
     { sender: { user_id: "wxid_bot" } },
     { self_id: "wxid_other" },
@@ -269,7 +269,7 @@ test("mock bridge verifies account, receives structured events and sends authent
     onReady: readyResolve,
     onMessage: (message) => {
       observed.push(message.messageId);
-      receivedResolve();
+      if (observed.length === 2) receivedResolve();
     },
   });
   try {
@@ -280,11 +280,11 @@ test("mock bridge verifies account, receives structured events and sends authent
     client.start();
     await ready;
     for (const socket of ws.clients) {
-      socket.send(JSON.stringify({ ...event, message_type: "private" }));
+      socket.send(JSON.stringify({ ...event, message_type: "private", message_id: "private-1" }));
       socket.send(JSON.stringify(event));
     }
     await received;
-    assert.deepEqual(observed, [event.message_id]);
+    assert.deepEqual(observed, ["private-1", event.message_id]);
     await client.sendGroup("123@chatroom", "reply");
     await client.sendAdmin("wxid_admin", "request");
     assert.equal(requests[0]?.path, "/send_group_msg");

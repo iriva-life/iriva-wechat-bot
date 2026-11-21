@@ -98,9 +98,9 @@ cd "$IRIVA_BRIDGE_SOURCE/bridge"
 
 - `get_login_info` 是 WS action；其 `data.user_id` **只是** `-self_id` 或 image_path 推导的 `myWechatId`，不能作为“当前登录账号已独立验证”的证据。
 - `get_contact_directory` 是 WS action，返回 `data.users[wxid].alias`（公开微信号），以及 nickname/remark/display。只使用精确 alias 匹配管理员配置；后面三者不能授权。未找到或出现冲突时停止该管理员绑定。
-- 群成员目录可有 wxid，但其 alias 可能为空。管理员需要先与 bot 成为联系人，或经本地人工核验后配置绑定；不允许群消息自报 alias 绑定。
+- 群成员目录可有 wxid，但其 alias 可能为空。应用会自动将真实 alias 与管理员白名单精确匹配；缺少 alias 的白名单项保持待匹配，不阻塞上线。成为 bot 联系人后通常能取得 alias，也支持本地人工绑定；不允许群消息自报 alias 绑定。
 - 公共目录响应经 `publicCopy()` 移除数据库密钥；不要直接调用 Hook 导出并记录完整结果。bridge 会把数据库密钥缓存到 `~/Library/Caches/WeChatAI/db-keys.json`（0600），发送句柄缓存到同目录 `r3-seed.json`。切号、卸载、备份策略需覆盖这些敏感文件；不能当普通日志上传。
-- 入站读取 `group_id`、`sender.user_id`、`message_id`、`mentions` / `at` 段；发送调用带 Bearer 的 `POST /send_group_msg`，请求含 `group_id` 和消息段。管理员黑名单申请使用 `POST /send_private_msg`，普通私聊入站依旧忽略。
+- 入站读取 `group_id`、`sender.user_id`、`message_id`、`mentions` / `at` 段；发送调用带 Bearer 的 `POST /send_group_msg`，请求含 `group_id` 和消息段。私聊回复和管理员黑名单申请使用 `POST /send_private_msg`。私聊不要求 @，仍执行身份权限和违规规则。
 - 直接连接 `ws://127.0.0.1:58080/ws` 并用 Authorization header 鉴权；不要把 token 放查询参数或公开 Tailscale 端口。
 
 ## 6. 放行验收

@@ -34,7 +34,7 @@ async function until(
 }
 
 test(
-  "full main entrypoint: bridge → reviewer → worker tool → leader → paced group send; ignored inputs and replay remain silent",
+  "full main entrypoint: bridge → reviewer → worker tool → leader → paced group/private send; ignored inputs and replay remain silent",
   { timeout: 35_000 },
   async () => {
     const root = fileURLToPath(new URL("../", import.meta.url));
@@ -127,7 +127,9 @@ test(
             message = { role: "assistant", content: "二加二等于四。" };
           }
           response.end(JSON.stringify({ choices: [{ message }] }));
-        } else if (request.url === "/send_group_msg") {
+        } else if (
+          ["/send_group_msg", "/send_private_msg"].includes(request.url ?? "")
+        ) {
           assert.equal(
             request.headers.authorization,
             "Bearer mock-bridge-token",
@@ -233,7 +235,7 @@ test(
         "verified bridge connection",
       );
       assert.equal(exit, undefined, `Host exited before ready: ${errors}`);
-      emit({ ...base, message_id: "private-1", message_type: "private" });
+      emit({ ...base, message_id: "self-1", is_self: true });
       emit({
         ...base,
         message_id: "unmentioned-1",
@@ -267,7 +269,7 @@ test(
         },
       ]);
       emit(base);
-      emit({ ...base, message_id: "private-2", message_type: "private" });
+      emit({ ...base, message_id: "self-2", is_self: true });
       emit({
         ...base,
         message_id: "unmentioned-2",
@@ -276,6 +278,21 @@ test(
       await delay(300);
       assert.equal(models.length, 4);
       assert.equal(sent.length, 1);
+      emit({
+        ...base,
+        message_id: "private-3",
+        message_type: "private",
+        group_id: undefined,
+        message: [{ type: "text", data: { text: "二加二等于几？" } }],
+      });
+      await until(
+        () => sent.length === 2 || failures.length > 0,
+        "private answer",
+      );
+      assert.deepEqual(failures, []);
+      assert.equal((sent[1] as SentBody).user_id, "wxid_other");
+      assert.equal(sent[1].group_id, undefined);
+      assert.equal(models.length, 8);
       child.kill("SIGTERM");
       await until(() => !!exit, "graceful SIGTERM shutdown", 8000);
       await exited;
@@ -292,7 +309,7 @@ test(
             .prepare("SELECT status FROM outbox")
             .all()
             .map((r) => r.status),
-          ["sent"],
+          ["sent", "sent"],
         );
       } finally {
         outbox.close();

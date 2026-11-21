@@ -1,4 +1,5 @@
 export interface InboundMessage {
+  conversationType?: "group" | "private";
   accountId: string;
   messageId: string;
   groupId: string;
@@ -40,18 +41,23 @@ export function normalizeInbound(
   expectedAccountId: string,
 ): InboundMessage | null {
   const event = record(raw);
-  if (event.post_type !== "message" || event.message_type !== "group")
+  if (
+    event.post_type !== "message" ||
+    !["group", "private"].includes(String(event.message_type))
+  )
     return null;
   const accountId = id(event.self_id);
-  const groupId = id(event.group_id);
   const senderId = id(record(event.sender).user_id) ?? id(event.user_id);
+  const isPrivate = event.message_type === "private";
+  // groupId is the legacy context/session scope; private scopes never identify a group.
+  const groupId = isPrivate ? `private:${senderId}` : id(event.group_id);
   const messageId = id(event.message_id);
   if (
     !accountId ||
     accountId !== expectedAccountId ||
     !isUserId(accountId) ||
     !groupId ||
-    !isGroupId(groupId) ||
+    (!isPrivate && !isGroupId(groupId)) ||
     !senderId ||
     !isUserId(senderId) ||
     !messageId ||
@@ -83,6 +89,7 @@ export function normalizeInbound(
     }
   if (!text.trim() || text.length > 64_000) return null;
   return {
+    conversationType: isPrivate ? "private" : "group",
     accountId,
     messageId,
     groupId,
