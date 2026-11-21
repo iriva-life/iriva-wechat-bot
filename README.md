@@ -4,7 +4,7 @@ Bot 微信号 `iriva2026`。管理员白名单为 `EnRomantice`、`quietfire1`�
 
 ## 当前状态
 
-应用实现和模拟端到端验证已完成。Mac mini 已部署程序及运行依赖，并从固定源码构建好 OneBot 桥接，桥接自带测试通过。2026-11-21 已通过远程桌面核验微信登录账号为 `iriva2026`，测试群为「IRIVA | 青鸟」。官方客户端备份已校验，Gadget 已安装，修改后的签名与 sandbox entitlement 检查通过。bot、EnRomantice 及测试群 ID 已核验绑定；quietfire1 保留白名单，待通讯录自动匹配。**bot 已在正式模式启动；真实发送初始化和私聊端到端验收仍在进行，尚未验证实际回复送达。** 详细结果见 [验证记录](docs/VALIDATION.md)。
+应用实现和模拟端到端验证已完成。Mac mini 已部署程序及运行依赖，并从固定源码构建好 OneBot 桥接，桥接自带测试通过。2026-11-21 已通过远程桌面核验微信登录账号为 `iriva2026`，业务群为「IRIVA | 青鸟」。官方客户端备份已校验，Gadget 已安装，修改后的签名与 sandbox entitlement 检查通过。bot、EnRomantice 及业务群 ID 已核验绑定；quietfire1 保留白名单，待通讯录自动匹配。**bot 已在正式模式运行；管理员 Bash、知识目录和真实私聊回复已验证，用户已在手机确认收到。客户群未发送测试消息。** 详细结果见 [验证记录](docs/VALIDATION.md)。
 
 **双击启动、SSH/远程桌面、微信登录失败恢复流程：[MACMINI.md](MACMINI.md)。** 根目录 `启动 IRIVA.command` 为桌面入口源文件，`scripts/install-desktop-link.sh` 在 Mac mini 桌面创建链接。
 
@@ -40,6 +40,12 @@ Bot 微信号 `iriva2026`。管理员白名单为 `EnRomantice`、`quietfire1`�
 
 生产环境每个 agent 一个 OS 子进程、一个 Wayline Runtime、一个 SQLite 文件。所有实际任务先交 worker，leader 没有业务工具。reviewer 独立审核原始消息且无工具。每次提问独立创建会话，不混用不同群成员的历史；管理员可维护全局及当前群的预设上下文。
 
+## 人设与业务知识
+
+根目录 [soul.md](soul.md) 定义 IRIVA 是一只青鸟，不自称“语言助手”。[knowledge/faq/](knowledge/faq/) 保存社区介绍、价格及差异三组问答，分别对应运行知识库的 `faq/about`、`faq/pricing`、`faq/difference`。
+
+这些内容已同步到 Mac mini 的 `policy.sqlite`：人设对应 `prompt/global`，问答对应 `knowledge` 条目，后续请求即时生效。运行时以数据库为准；仅编辑或拉取仓库文件不会自动覆盖管理员在微信中修改的内容，更新文件后需显式同步。管理员可直接让 bot 查看或修改上述 key 和全局 prompt。
+
 ## 权限规则
 
 - **admin**：公开微信号采用本地白名单；程序自动用可信微信通讯录的真实 `alias` 匹配内部 wxid，不要求逐个手工校验。尚未出现在通讯录的白名单项保持待匹配，不阻塞运行。可列出知识库目录、读取/修改条目、设置/清空上下文、修改全局 prompt/行为、审批/拒绝拉黑和解除黑名单；还可明确请求 `admin_bash`，以 Mac mini 的 `ender` 用户运行 Bash（默认 30 秒、最长 60 秒，输出最多 16000 字符）。Bash 是实际主机权限，不是沙盒，能够修改该用户可访问的文件；不注入模型密钥、OneBot token 或 BASH_ENV，不提供 sudo 密码。管理员名单从本机配置加载，身份绑定可来自本机配置或已鉴权桥接通讯录，不能靠修改全局 prompt 提权。
@@ -47,7 +53,7 @@ Bot 微信号 `iriva2026`。管理员白名单为 `EnRomantice`、`quietfire1`�
 - **blocker**：入口直接忽略，不调用模型。
 - 严重违规仅三类：明确窃取密钥/他人私密数据、绕过权限修改系统、破坏性操作。引用案例、正常讨论和一般拒绝不计次。审核输出必须包含原文精确证据；审核失败不计次。
 - 同一个 bot/message ID 只计一次；第 **4** 次生成待审申请，带证据通知所有已绑定 admin。绑定缺失的通知保持待处理。任何 admin 可批准/拒绝，批准才生效，其他 admin 的过期通知取消。模型审核并非绝对准确，管理员负责最终复核。
-- 管理员通知不能通过私聊回复处理；需在白名单群 @ bot 并提供申请 ID。公开群内不要粘贴私密证据，证据已在管理员通知中提供。
+- 管理员可直接私聊处理通知，或在白名单群 @ bot 并提供申请 ID。公开群内不要粘贴私密证据，证据已在管理员通知中提供。
 - `behavior/global` 当前支持 `paused` 和 `maxReplyChars`（100–8000）。暂停时 admin 仍能调整设置。全局 prompt 可改变回答行为，不能改变代码权限、群聊 @ 规则。
 
 ## 本地开发
