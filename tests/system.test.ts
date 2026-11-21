@@ -97,13 +97,14 @@ test(
               }),
             };
           } else if (system.includes("你是 IRIVA 的工作子 agent")) {
-            assert.match(system, /当前提问者角色：other/);
+            assert.match(system, /当前提问者角色：(other|admin)/);
             const names = model.tools?.map((t) => t.function.name) ?? [];
             assert.ok(names.includes("knowledge_read"));
-            assert.ok(names.includes("blocker_add_tools"));
+            const admin = system.includes("当前提问者角色：admin");
+            assert.equal(names.includes("blocker_add_tools"), !admin);
             assert.equal(
               names.some((name) => name.startsWith("admin_")),
-              false,
+              admin,
             );
             const toolResult = model.messages.find((m) => m.role === "tool");
             if (!toolResult) {
@@ -130,7 +131,7 @@ test(
             }
           } else {
             assert.ok(system.includes("leader"));
-            assert.match(system, /当前提问者角色：other/);
+            assert.match(system, /当前提问者角色：(other|admin)/);
             assert.match(system, /微信消息必须使用纯文本/);
             roles.push("leader");
             assert.equal(model.tools, undefined);
@@ -170,7 +171,9 @@ test(
           action: string;
           echo: string;
         };
-        if (command.action !== "get_login_info") {
+        if (
+          !["get_login_info", "get_contact_directory"].includes(command.action)
+        ) {
           failures.push(new Error("Unexpected WS action"));
           return;
         }
@@ -178,7 +181,10 @@ test(
           JSON.stringify({
             status: "ok",
             echo: command.echo,
-            data: { user_id: "wxid_bot" },
+            data:
+              command.action === "get_contact_directory"
+                ? { groups: {} }
+                : { user_id: "wxid_bot" },
           }),
         );
       });
@@ -278,7 +284,14 @@ test(
       assert.deepEqual(sent, [
         {
           group_id: "123@chatroom",
-          message: [{ type: "text", data: { text: "二加二等于四。" } }],
+          message: [
+            {
+              type: "text",
+              data: {
+                text: "你好，方便告诉我怎么称呼你吗？\n\n二加二等于四。",
+              },
+            },
+          ],
         },
       ]);
       emit(base);
@@ -294,6 +307,8 @@ test(
       emit({
         ...base,
         message_id: "private-3",
+        user_id: "wxid_admin_a",
+        sender: { user_id: "wxid_admin_a" },
         message_type: "private",
         group_id: undefined,
         message: [{ type: "text", data: { text: "二加二等于几？" } }],
@@ -303,12 +318,14 @@ test(
         "private answer",
       );
       assert.deepEqual(failures, []);
-      assert.equal((sent[1] as SentBody).user_id, "wxid_other");
+      assert.equal((sent[1] as SentBody).user_id, "wxid_admin_a");
       assert.equal(sent[1].group_id, undefined);
-      assert.equal(models.length, 8);
+      assert.equal(models.length, 7);
       emit({
         ...base,
         message_id: "private-followup",
+        user_id: "wxid_admin_a",
+        sender: { user_id: "wxid_admin_a" },
         message_type: "private",
         group_id: undefined,
         message: [{ type: "text", data: { text: "分别是什么内容？" } }],
@@ -318,7 +335,7 @@ test(
         "contextual follow-up",
       );
       assert.deepEqual(failures, []);
-      assert.equal(models.length, 12);
+      assert.equal(models.length, 10);
       child.kill("SIGTERM");
       await until(() => !!exit, "graceful SIGTERM shutdown", 8000);
       await exited;

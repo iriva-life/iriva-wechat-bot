@@ -311,28 +311,38 @@ test("blocker request tool cannot choose a different target or directly incremen
   }
 });
 
-test("private replies need no mention and retain admin/other permissions", async () => {
+test("private chat admits only verified admins; ordinary users remain silent", async () => {
   const f = fixture();
   try {
-    for (const [i, senderId] of ["wxid_a", "wxid_other"].entries()) {
-      const dm = normalizeInbound(
-        {
-          post_type: "message",
-          message_type: "private",
-          self_id: "wxid_bot",
-          user_id: senderId,
-          message_id: `dm-${i}`,
-          message: "用 Bash 执行 pwd",
-        },
-        "wxid_bot",
-      )!;
-      assert.equal(await f.app.process(dm), "answered");
-      assert.equal(f.tasks[i].role, i === 0 ? "admin" : "other");
-      assert.equal(f.tasks[i].groupId, `private:${senderId}`);
-      assert.equal(f.delivered[i].targetType, "private");
-      assert.equal(f.delivered[i].targetId, senderId);
+    for (const senderId of ["wxid_other", "wxid_unbound"]) {
+      assert.equal(
+        await f.app.process(
+          message(`dm-${senderId}`, {
+            conversationType: "private",
+            groupId: `private:${senderId}`,
+            senderId,
+            mentions: [],
+          }),
+        ),
+        "ignored",
+      );
     }
-    assert.equal(f.reviews, 1);
+    assert.equal(f.tasks.length, 0);
+    assert.equal(f.reviews, 0);
+    assert.equal(f.delivered.length, 0);
+    assert.equal(
+      await f.app.process(
+        message("dm-admin", {
+          conversationType: "private",
+          groupId: "private:wxid_a",
+          senderId: "wxid_a",
+          mentions: [],
+        }),
+      ),
+      "answered",
+    );
+    assert.equal(f.tasks[0].role, "admin");
+    assert.equal(f.delivered[0].targetType, "private");
   } finally {
     f.close();
   }
@@ -354,7 +364,13 @@ test("five concurrent conversations, busy reply, and admin worker status bypasse
   const gate = new Promise<void>((r) => (release = r));
   let started = 0;
   const app = new BotApplication({
-    config,
+    config: {
+      ...config,
+      allowedGroupIds: [
+        ...config.allowedGroupIds,
+        ...Array.from({ length: 6 }, (_, i) => `${1000 + i}@chatroom`),
+      ],
+    },
     state,
     inbox,
     jobs,
@@ -374,10 +390,13 @@ test("five concurrent conversations, busy reply, and admin worker status bypasse
   const dm = (id: string, senderId: string, text = "问题") =>
     message(id, {
       senderId,
-      conversationType: "private",
-      groupId: `private:${senderId}`,
+      conversationType: senderId === "wxid_a" ? "private" : "group",
+      groupId:
+        senderId === "wxid_a"
+          ? `private:${senderId}`
+          : `${1000 + (senderId === "wxid_six" ? 5 : Number(senderId.slice(-1)))}@chatroom`,
       text,
-      mentions: [],
+      mentions: [config.botWxid],
     });
   const work = Array.from({ length: 5 }, (_, i) =>
     app.process(dm(`run${i}`, `wxid_user${i}`)),
@@ -387,7 +406,10 @@ test("five concurrent conversations, busy reply, and admin worker status bypasse
     assert.equal(started, 5);
     assert.equal(jobs.list().length, 5);
     assert.equal(await app.process(dm("sixth", "wxid_six")), "refused");
-    assert.match(deliveries.at(-1)!.text, /繁忙/);
+    assert.match(
+      deliveries.at(-1)!.text,
+      /请稍等一下，我手里还有别的消息在回复/,
+    );
     assert.equal(
       await app.process(dm("status", "wxid_a", "现在正在工作的worker有哪些？")),
       "answered",
@@ -398,7 +420,10 @@ test("five concurrent conversations, busy reply, and admin worker status bypasse
       await app.process(dm("status-other", "wxid_six", "查看worker状态")),
       "refused",
     );
-    assert.match(deliveries.at(-1)!.text, /繁忙/);
+    assert.match(
+      deliveries.at(-1)!.text,
+      /请稍等一下，我手里还有别的消息在回复/,
+    );
     await app.process(
       message("silent-context", { text: "我们周六练英语", mentions: [] }),
     );
@@ -464,6 +489,69 @@ test("conversation snapshot is fixed before asynchronous review; later group mes
   } finally {
     release();
     store.close();
+    state.close();
+    inbox.close();
+  }
+});
+
+test("reply openings ask once, persist name/refusal and private non-admin messages create no history", async () => {
+  const { ConversationStore } = await import("../src/conversation.js");
+  const history = new ConversationStore(":memory:"),
+    state = new StateStore(":memory:", { adminAliases: config.adminAliases }),
+    inbox = new Inbox(":memory:");
+  for (const b of config.identityBindings)
+    state.bindIdentity({ ...b, source: "manual", verified: true });
+  const delivered: Delivery[] = [];
+  const app = new BotApplication({
+    config,
+    state,
+    inbox,
+    conversations: history,
+    deliver: (d) => {
+      delivered.push(d);
+    },
+    agents: {
+      review: async () => normal,
+      answer: async () => ({ text: "我们提供母语者口语训练。" }),
+    },
+  });
+  try {
+    const dm = (id: string, text: string) =>
+      message(id, {
+        conversationType: "private",
+        groupId: "private:wxid_a",
+        senderId: "wxid_a",
+        mentions: [],
+        text,
+      });
+    await app.process(dm("hello", "你是谁"));
+    assert.match(delivered.at(-1)!.text, /^你好，方便告诉我怎么称呼你吗/);
+    await app.process(dm("name", "叫我Ender"));
+    assert.match(delivered.at(-1)!.text, /^Ender，/);
+    await app.process(dm("again", "多少钱"));
+    assert.match(delivered.at(-1)!.text, /^Ender，/);
+    await app.process(dm("no-name", "不想提供称呼"));
+    assert.doesNotMatch(delivered.at(-1)!.text, /怎么称呼/);
+    await app.process(dm("after-refusal", "有什么区别"));
+    assert.doesNotMatch(delivered.at(-1)!.text, /怎么称呼/);
+    const size = delivered.length;
+    assert.equal(
+      await app.process(
+        message("private-other", {
+          conversationType: "private",
+          groupId: "private:wxid_other",
+          mentions: [],
+        }),
+      ),
+      "ignored",
+    );
+    assert.equal(delivered.length, size);
+    assert.equal(
+      history.snapshot("wxid_bot", "private:wxid_other").rows.length,
+      0,
+    );
+  } finally {
+    history.close();
     state.close();
     inbox.close();
   }

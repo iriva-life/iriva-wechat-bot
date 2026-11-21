@@ -7,6 +7,7 @@ import { BotApplication, applicationTools } from "./application.js";
 import { ConversationStore } from "./conversation.js";
 import { ConversationMaintenance } from "./conversation-maintenance.js";
 import { WorkerJobs } from "./jobs.js";
+import { record, isGroupId } from "./wechat/normalize.js";
 import { bindDirectoryAdmins } from "./admin-directory.js";
 import {
   createProcessAgentOrchestrator,
@@ -165,14 +166,26 @@ try {
   );
   let lastDirectoryAttempt = 0;
   const refreshAdmins = async () => {
-    if (
-      !db.unresolvedAdminAliases().length ||
-      Date.now() - lastDirectoryAttempt < 60_000
-    )
-      return;
+    if (Date.now() - lastDirectoryAttempt < 60_000) return;
     lastDirectoryAttempt = Date.now();
     try {
       const directory = await client!.request("get_contact_directory");
+      const groups = Object.entries(record(record(directory).groups))
+        .filter(([id]) => isGroupId(id))
+        .map(([id, value]) => ({
+          id,
+          name: String(
+            record(value).display ??
+              record(value).nickname ??
+              record(value).name ??
+              "",
+          ),
+        }));
+      writeFileSync(
+        join(dataDir, "groups.json"),
+        JSON.stringify({ updatedAt: new Date().toISOString(), groups }),
+        { mode: 0o600 },
+      );
       const count = bindDirectoryAdmins(db, directory, config.botWxid);
       if (count) log("admin_directory_bound", { count });
     } catch {
@@ -215,7 +228,7 @@ try {
       d.targetType === "group"
         ? config.allowedGroupIds.includes(d.targetId)
         : d.targetType === "private"
-          ? db.roleFor(d.targetId) !== "blocker"
+          ? db.roleFor(d.targetId) === "admin"
           : db.roleFor(d.targetId) === "admin" &&
             db.mayDeliverNotification(d.id.split(":")[1] ?? "", d.targetId),
     send: (d) =>

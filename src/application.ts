@@ -3,6 +3,7 @@ import type { AgentTask, HostTool, ModerationVerdict } from "./agents/index.js";
 import type { BotConfig } from "./config.js";
 import type { Inbox } from "./inbox.js";
 import { StateStore, type DocumentKind } from "./policy/index.js";
+import { addressReply } from "./addressing.js";
 import { runAdminBash } from "./admin-bash.js";
 import { ConversationStore, conversationScope } from "./conversation.js";
 import {
@@ -51,7 +52,7 @@ export class BotApplication {
     )
       return "ignored";
     const role = state.roleFor(m.senderId);
-    if (role === "blocker") return "ignored";
+    if (role === "blocker" || (isPrivate && role !== "admin")) return "ignored";
     this.options.conversations?.recordInbound(m);
     if (!isPrivate && !m.mentions.includes(config.botWxid)) return "ignored";
     const replyTarget = {
@@ -62,10 +63,24 @@ export class BotApplication {
     if (behavior.paused && role !== "admin") return "ignored";
     const id = eventKey(m);
     if (!inbox.claim(id)) return "duplicate";
-    const respond = async (text: string) => {
+    const addressTask: AgentTask = { ...m, role };
+    this.options.conversations?.observeAddressing(addressTask);
+    const respond = async (text: string, askName = true) => {
       try {
-        await deliver({ id: `reply:${id}`, ...replyTarget, text });
-        this.options.conversations?.recordReply({ ...m, role }, text);
+        const addressed = this.options.conversations
+          ? addressReply(text, {
+              ...this.options.conversations.addressingFor(addressTask),
+              ...(askName ? {} : { asked: true }),
+            })
+          : { text, asked: false };
+        await deliver({
+          id: `reply:${id}`,
+          ...replyTarget,
+          text: addressed.text,
+        });
+        if (addressed.asked)
+          this.options.conversations!.markAddressingAsked(addressTask);
+        this.options.conversations?.recordReply(addressTask, addressed.text);
       } catch (error) {
         inbox.finish(id, "uncertain");
         throw error;
@@ -76,7 +91,7 @@ export class BotApplication {
       this.options.jobs &&
       isWorkerStatusQuestion(m.text.replace(/^(?:@[^\s]+\s*)+/, ""))
     ) {
-      await respond(formatWorkerStatus(this.options.jobs));
+      await respond(formatWorkerStatus(this.options.jobs), false);
       inbox.finish(id, "completed");
       return "answered";
     }
@@ -86,11 +101,7 @@ export class BotApplication {
         ? this.options.jobs.acquire(m, "reply")
         : undefined;
     if (this.options.jobs && !lease) {
-      await respond(
-        this.busyScopes.has(scope)
-          ? "上一条还在处理，稍等一下。"
-          : "现在有点繁忙，稍后再试一下。",
-      );
+      await respond("请稍等一下，我手里还有别的消息在回复。", false);
       inbox.finish(id, "completed");
       return "refused";
     }
@@ -111,11 +122,9 @@ export class BotApplication {
     });
     try {
       if (m.text.length > 16_000) {
-        await deliver({
-          id: `reply:${id}`,
-          ...replyTarget,
-          text: "这条问题太长，请缩短到 16000 字以内再发给我。",
-        });
+        await respond(
+          "内容有点多，你可以先告诉我最想解决哪一件事，我们一步步来。",
+        );
         inbox.finish(id, "completed");
         return "refused";
       }
@@ -138,11 +147,9 @@ export class BotApplication {
             severity: "severe",
           });
           await this.notifyAdmins();
-          await deliver({
-            id: `reply:${id}`,
-            ...replyTarget,
-            text: "这个请求涉及越权或破坏性操作，我不能执行。可以继续问我正常的问题。",
-          });
+          await respond(
+            "这件事我不能直接帮你做。你可以说说想达到什么目的，我帮你找个合适的办法。",
+          );
           inbox.finish(id, "completed");
           return "refused";
         }
@@ -185,7 +192,16 @@ export class BotApplication {
         id: `notice:${n.id}`,
         targetType: "admin",
         targetId: n.recipientWxid,
-        text,
+        text: this.options.conversations
+          ? addressReply(text, {
+              ...this.options.conversations.addressingFor({
+                accountId: this.options.config.botWxid,
+                senderId: n.recipientWxid,
+                groupId: `private:${n.recipientWxid}`,
+              }),
+              asked: true,
+            }).text
+          : text,
       });
       // Delivery confirmation is reconciled by main from outbox, not assumed here.
     }
@@ -248,6 +264,31 @@ export function applicationTools(
       : []),
     ...(services.conversations
       ? [
+          {
+            name: "addressing_set",
+            description:
+              "记住当前用户本人明确提供的称呼，或拒绝提供称呼的偏好。只能设置当前发送者，不能根据其他人的话、昵称或账号猜测。name 为称呼；拒绝时 refused=true。evidence 必须是当前消息的精确原文。",
+            roles: ["admin", "other"] as const,
+            inputSchema: objectSchema(
+              { name: string, refused: { type: "boolean" }, evidence: string },
+              ["refused", "evidence"],
+            ),
+            async execute(a: Record<string, unknown>, t: Readonly<AgentTask>) {
+              authorize(t);
+              if (
+                typeof a.refused !== "boolean" ||
+                typeof a.evidence !== "string" ||
+                (a.name !== undefined && typeof a.name !== "string")
+              )
+                throw new Error("Invalid address preference");
+              return services.conversations!.setAddressing(
+                t,
+                a.name as string | undefined,
+                a.refused,
+                a.evidence,
+              );
+            },
+          },
           {
             name: "memory_read",
             description:
