@@ -1,0 +1,29 @@
+{
+  "name": "iriva-wechat-bot",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "tsx --test tests/*.test.ts",
+    "start": "node --env-file-if-exists=.env dist/src/main.js",
+    "dev": "tsx --env-file-if-exists=.env src/main.ts",
+    "admin": "tsx src/admin-cli.ts",
+    "smoke:model": "node --env-file=.env dist/scripts/model-smoke.js",
+    "check": "npm run typecheck && npm test && npm run build"
+  },
+  "dependencies": {
+    "wayline-agent-runtime": "file:packages/wayline-agent-runtime-0.1.0.tgz",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.17",
+    "@types/ws": "^8.5.14",
+    "tsx": "^4.20.0",
+    "typescript": "^5.9.0"
+  }
+}

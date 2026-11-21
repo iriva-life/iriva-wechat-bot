@@ -1,0 +1,10 @@
+node_modules/
+vendor/
+dist/
+.env
+data/
+backups/
+bridge-artifacts/
+config/local.json
+*.log
+.DS_Store

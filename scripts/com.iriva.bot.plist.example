@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>com.iriva.bot</string>
+  <key>ProgramArguments</key><array><string>/bin/bash</string><string>/Users/ender/.local/share/iriva-bot/scripts/run-macmini.sh</string></array>
+  <key>WorkingDirectory</key><string>/Users/ender/.local/share/iriva-bot</string>
+  <key>RunAtLoad</key><false/>
+  <key>KeepAlive</key><false/>
+  <key>StandardOutPath</key><string>/Users/ender/.local/share/iriva-bot/data/host.log</string>
+  <key>StandardErrorPath</key><string>/Users/ender/.local/share/iriva-bot/data/host-error.log</string>
+  <key>Umask</key><integer>63</integer>
+</dict></plist>
