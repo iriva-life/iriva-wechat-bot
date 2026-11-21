@@ -42,30 +42,3 @@ export function explicitAddressing(
   )
     return { refused: true, evidence: input };
 }
-export function addressReply(
-  text: string,
-  preference: Addressing,
-): { text: string; asked: boolean } {
-  const name = preference.name;
-  if (name) {
-    const body = text.trim();
-    return {
-      text:
-        body.startsWith(name + "，") || body.startsWith(name + ",")
-          ? body
-          : `${name}，${body}`,
-      asked: false,
-    };
-  }
-  if (!preference.refused && !preference.asked)
-    return {
-      text: `你好，方便告诉我怎么称呼你吗？\n\n${text.trim()}`,
-      asked: true,
-    };
-  return {
-    text: /^你好[，,！!。]/u.test(text.trim())
-      ? text.trim()
-      : `你好，${text.trim()}`,
-    asked: false,
-  };
-}

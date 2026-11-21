@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { explicitAddressing, addressReply } from "../src/addressing.js";
+import { explicitAddressing } from "../src/addressing.js";
 import { ConversationStore } from "../src/conversation.js";
 import type { AgentTask } from "../src/agents/index.js";
 const task = (
@@ -36,23 +36,6 @@ test("addressing asks once, uses explicit preferred name and does not infer thir
     explicitAddressing("叫我小张就好，介绍一下IRIVA", false)?.name,
     "小张",
   );
-  assert.equal(
-    addressReply("内容", { refused: false, asked: false }).asked,
-    true,
-  );
-  assert.equal(
-    addressReply("内容", { refused: false, asked: true }).text,
-    "你好，内容",
-  );
-  assert.equal(
-    addressReply("内容", { name: "小张", refused: false, asked: true }).text,
-    "小张，内容",
-  );
-  assert.equal(
-    addressReply("小张，内容", { name: "小张", refused: false, asked: true })
-      .text,
-    "小张，内容",
-  );
 });
 
 test("personal address and refusal survive restart and compaction; refusal applies to future conversations", () => {
@@ -67,7 +50,7 @@ test("personal address and refusal survive restart and compaction; refusal appli
     record(store, t);
     store.observeAddressing(t);
     assert.equal(store.addressingFor(t).refused, true);
-    assert.equal(addressReply("内容", store.addressingFor(t)).asked, false);
+    assert.equal(store.addressingFor(t).asked, true);
     store.close();
     store = new ConversationStore(path);
     assert.equal(

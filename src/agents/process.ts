@@ -19,6 +19,10 @@ import {
   REVIEWER,
   authorizationPrompt,
   WECHAT_STYLE,
+  REPLY_FORMAT,
+  EVENT_REPLY,
+  parseLeaderReply,
+  type ReplyEvent,
   type AgentTask,
   type HostTool,
   type ModerationVerdict,
@@ -324,6 +328,7 @@ export async function createProcessAgentOrchestrator(
               globalPrompt,
               authorizationPrompt(task, selected),
               WECHAT_STYLE,
+              REPLY_FORMAT,
             ],
             JSON.stringify({
               question: task.text,
@@ -335,10 +340,32 @@ export async function createProcessAgentOrchestrator(
           )
         ).trim();
         if (!text) throw new Error("Leader returned empty reply");
-        return { text, workerSessionId, leaderSessionId };
+        return { ...parseLeaderReply(text), workerSessionId, leaderSessionId };
       } finally {
         occupied.delete(slot);
       }
+    },
+    async compose(input: AgentTask, event: ReplyEvent, signal?: AbortSignal) {
+      const task = principal(input);
+      const text = await leader.run(
+        task,
+        `leader-event:${randomUUID()}`,
+        [
+          LEADER,
+          (await options.getGlobalPrompt?.()) ?? "",
+          authorizationPrompt(task, []),
+          WECHAT_STYLE,
+          EVENT_REPLY,
+          REPLY_FORMAT,
+        ],
+        JSON.stringify({
+          event,
+          context: (await options.getContext?.(task)) ?? "",
+        }),
+        [],
+        signal,
+      );
+      return parseLeaderReply(text);
     },
     async summarize(
       task: AgentTask,

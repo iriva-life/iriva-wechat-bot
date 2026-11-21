@@ -138,7 +138,13 @@ test(
             assert.ok(
               model.messages.some((m) => m.content?.includes("知识库暂无资料")),
             );
-            message = { role: "assistant", content: "**二加二等于四。**" };
+            message = {
+              role: "assistant",
+              content: JSON.stringify({
+                text: "**二加二等于四。**",
+                askedAddressing: false,
+              }),
+            };
           }
           response.end(JSON.stringify({ choices: [{ message }] }));
         } else if (
@@ -288,7 +294,7 @@ test(
             {
               type: "text",
               data: {
-                text: "你好，方便告诉我怎么称呼你吗？\n\n二加二等于四。",
+                text: "二加二等于四。",
               },
             },
           ],

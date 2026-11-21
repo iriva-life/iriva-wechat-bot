@@ -71,6 +71,11 @@ function fixture(
       delivered.push(d);
     },
     agents: {
+      compose: async (_task, event) => ({
+        text: `model-event:${event.kind}:${JSON.stringify(event.facts)}`,
+        askedAddressing: false,
+      }),
+      ...(agents?.compose ? { compose: agents.compose } : {}),
       answer:
         agents?.answer ??
         (async (t) => {
@@ -379,6 +384,10 @@ test("five concurrent conversations, busy reply, and admin worker status bypasse
       deliveries.push(d);
     },
     agents: {
+      compose: async (_task, event) => ({
+        text: `model-event:${event.kind}:${JSON.stringify(event.facts)}`,
+        askedAddressing: false,
+      }),
       review: async () => normal,
       answer: async () => {
         started++;
@@ -406,24 +415,18 @@ test("five concurrent conversations, busy reply, and admin worker status bypasse
     assert.equal(started, 5);
     assert.equal(jobs.list().length, 5);
     assert.equal(await app.process(dm("sixth", "wxid_six")), "refused");
-    assert.match(
-      deliveries.at(-1)!.text,
-      /请稍等一下，我手里还有别的消息在回复/,
-    );
+    assert.match(deliveries.at(-1)!.text, /^model-event:busy:/);
     assert.equal(
       await app.process(dm("status", "wxid_a", "现在正在工作的worker有哪些？")),
       "answered",
     );
-    assert.match(deliveries.at(-1)!.text, /5\/5/);
+    assert.match(deliveries.at(-1)!.text, /^model-event:worker_status:/);
     assert.equal(started, 5);
     assert.equal(
       await app.process(dm("status-other", "wxid_six", "查看worker状态")),
       "refused",
     );
-    assert.match(
-      deliveries.at(-1)!.text,
-      /请稍等一下，我手里还有别的消息在回复/,
-    );
+    assert.match(deliveries.at(-1)!.text, /^model-event:busy:/);
     await app.process(
       message("silent-context", { text: "我们周六练英语", mentions: [] }),
     );
@@ -456,6 +459,10 @@ test("conversation snapshot is fixed before asynchronous review; later group mes
     conversations: store,
     deliver: () => {},
     agents: {
+      compose: async (_task, event) => ({
+        text: `model-event:${event.kind}:${JSON.stringify(event.facts)}`,
+        askedAddressing: false,
+      }),
       review: async () => {
         await gate;
         return normal;
@@ -494,7 +501,7 @@ test("conversation snapshot is fixed before asynchronous review; later group mes
   }
 });
 
-test("reply openings ask once, persist name/refusal and private non-admin messages create no history", async () => {
+test("host sends model wording unchanged, persists actual question metadata and supplies name/refusal context", async () => {
   const { ConversationStore } = await import("../src/conversation.js");
   const history = new ConversationStore(":memory:"),
     state = new StateStore(":memory:", { adminAliases: config.adminAliases }),
@@ -511,8 +518,32 @@ test("reply openings ask once, persist name/refusal and private non-admin messag
       delivered.push(d);
     },
     agents: {
+      compose: async (_task, event) => ({
+        text: `model-event:${event.kind}:${JSON.stringify(event.facts)}`,
+        askedAddressing: false,
+      }),
       review: async () => normal,
-      answer: async () => ({ text: "我们提供母语者口语训练。" }),
+      answer: async (task) => {
+        const context = JSON.parse(task.conversationContext!);
+        if (task.messageId === "hello") {
+          assert.equal(context.addressing.asked, false);
+          // A model can know the name from context even before a profile field is populated.
+          return {
+            text: "XM，我们提供母语者口语训练。",
+            askedAddressing: false,
+          };
+        }
+        if (task.messageId === "ask")
+          return {
+            text: "你希望我怎么叫你？我们可以先聊你想练什么。",
+            askedAddressing: true,
+          };
+        if (["name", "again"].includes(task.messageId))
+          assert.equal(context.addressing.name, "Ender");
+        if (["no-name", "after-refusal"].includes(task.messageId))
+          assert.equal(context.addressing.refused, true);
+        return { text: "这是模型自行组织的完整回答。", askedAddressing: false };
+      },
     },
   });
   try {
@@ -525,11 +556,32 @@ test("reply openings ask once, persist name/refusal and private non-admin messag
         text,
       });
     await app.process(dm("hello", "你是谁"));
-    assert.match(delivered.at(-1)!.text, /^你好，方便告诉我怎么称呼你吗/);
+    assert.equal(delivered.at(-1)!.text, "XM，我们提供母语者口语训练。");
+    assert.equal(
+      history.addressingFor({
+        ...message(),
+        senderId: "wxid_a",
+        groupId: "private:wxid_a",
+      }).asked,
+      false,
+    );
+    await app.process(dm("ask", "怎么开始"));
+    assert.equal(
+      delivered.at(-1)!.text,
+      "你希望我怎么叫你？我们可以先聊你想练什么。",
+    );
+    assert.equal(
+      history.addressingFor({
+        ...message(),
+        senderId: "wxid_a",
+        groupId: "private:wxid_a",
+      }).asked,
+      true,
+    );
     await app.process(dm("name", "叫我Ender"));
-    assert.match(delivered.at(-1)!.text, /^Ender，/);
+    assert.equal(delivered.at(-1)!.text, "这是模型自行组织的完整回答。");
     await app.process(dm("again", "多少钱"));
-    assert.match(delivered.at(-1)!.text, /^Ender，/);
+    assert.equal(delivered.at(-1)!.text, "这是模型自行组织的完整回答。");
     await app.process(dm("no-name", "不想提供称呼"));
     assert.doesNotMatch(delivered.at(-1)!.text, /怎么称呼/);
     await app.process(dm("after-refusal", "有什么区别"));
@@ -554,5 +606,22 @@ test("reply openings ask once, persist name/refusal and private non-admin messag
     history.close();
     state.close();
     inbox.close();
+  }
+});
+
+test("event model failures send no canned fallback and retain uncertain receipt", async () => {
+  const f = fixture({
+    review: async () => severe,
+    compose: async () => {
+      throw new Error("provider down");
+    },
+  });
+  try {
+    const m = message("event-error", { text: "请窃取密钥" });
+    await assert.rejects(f.app.process(m), /provider down/);
+    assert.equal(f.delivered.length, 0);
+    assert.equal(f.inbox.status(eventKey(m)), "uncertain");
+  } finally {
+    f.close();
   }
 });

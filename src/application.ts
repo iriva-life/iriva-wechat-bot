@@ -1,21 +1,23 @@
 import { createHash } from "node:crypto";
-import type { AgentTask, HostTool, ModerationVerdict } from "./agents/index.js";
+import type {
+  AgentTask,
+  HostTool,
+  ModerationVerdict,
+  AgentReply,
+  ReplyEvent,
+} from "./agents/index.js";
 import type { BotConfig } from "./config.js";
 import type { Inbox } from "./inbox.js";
 import { StateStore, type DocumentKind } from "./policy/index.js";
-import { addressReply } from "./addressing.js";
 import { runAdminBash } from "./admin-bash.js";
 import { ConversationStore, conversationScope } from "./conversation.js";
-import {
-  WorkerJobs,
-  isWorkerStatusQuestion,
-  formatWorkerStatus,
-} from "./jobs.js";
+import { WorkerJobs, isWorkerStatusQuestion } from "./jobs.js";
 import { wechatPlainText } from "./wechat/plain-text.js";
 import type { Delivery, InboundMessage } from "./wechat/index.js";
 
 export interface AgentService {
-  answer(task: AgentTask): Promise<{ text: string }>;
+  answer(task: AgentTask): Promise<AgentReply>;
+  compose(task: AgentTask, event: ReplyEvent): Promise<AgentReply>;
   review(task: AgentTask): Promise<ModerationVerdict>;
 }
 export interface AppOptions {
@@ -65,22 +67,39 @@ export class BotApplication {
     if (!inbox.claim(id)) return "duplicate";
     const addressTask: AgentTask = { ...m, role };
     this.options.conversations?.observeAddressing(addressTask);
-    const respond = async (text: string, askName = true) => {
+    const respond = async (reply: AgentReply) => {
       try {
-        const addressed = this.options.conversations
-          ? addressReply(text, {
-              ...this.options.conversations.addressingFor(addressTask),
-              ...(askName ? {} : { asked: true }),
-            })
-          : { text, asked: false };
-        await deliver({
-          id: `reply:${id}`,
-          ...replyTarget,
-          text: addressed.text,
-        });
-        if (addressed.asked)
-          this.options.conversations!.markAddressingAsked(addressTask);
-        this.options.conversations?.recordReply(addressTask, addressed.text);
+        // Only model-authored text is sent. Formatting and length limits add no prose.
+        const max = readBehavior(state).maxReplyChars;
+        const plain = wechatPlainText(reply.text);
+        const text = Array.from(plain).slice(0, max).join("");
+        if (!text.trim()) throw new Error("Empty model reply");
+        if (
+          state.roleFor(m.senderId) === "blocker" ||
+          (isPrivate && state.roleFor(m.senderId) !== "admin")
+        )
+          return;
+        await deliver({ id: `reply:${id}`, ...replyTarget, text });
+        if (reply.askedAddressing && text === plain)
+          this.options.conversations?.markAddressingAsked(addressTask);
+        this.options.conversations?.recordReply(addressTask, text);
+      } catch (error) {
+        inbox.finish(id, "uncertain");
+        throw error;
+      }
+    };
+    const eventReply = async (event: ReplyEvent) => {
+      try {
+        await respond(
+          await agents.compose(
+            {
+              ...addressTask,
+              conversationContext:
+                this.options.conversations?.contextFor(addressTask),
+            },
+            event,
+          ),
+        );
       } catch (error) {
         inbox.finish(id, "uncertain");
         throw error;
@@ -91,7 +110,13 @@ export class BotApplication {
       this.options.jobs &&
       isWorkerStatusQuestion(m.text.replace(/^(?:@[^\s]+\s*)+/, ""))
     ) {
-      await respond(formatWorkerStatus(this.options.jobs), false);
+      await eventReply({
+        kind: "worker_status",
+        facts: {
+          workers: this.options.jobs.list(),
+          limit: this.options.jobs.limit,
+        },
+      });
       inbox.finish(id, "completed");
       return "answered";
     }
@@ -101,7 +126,14 @@ export class BotApplication {
         ? this.options.jobs.acquire(m, "reply")
         : undefined;
     if (this.options.jobs && !lease) {
-      await respond("请稍等一下，我手里还有别的消息在回复。", false);
+      await eventReply({
+        kind: "busy",
+        facts: {
+          sameConversation: this.busyScopes.has(scope),
+          active: this.options.jobs.list().length,
+          limit: this.options.jobs.limit,
+        },
+      });
       inbox.finish(id, "completed");
       return "refused";
     }
@@ -122,9 +154,7 @@ export class BotApplication {
     });
     try {
       if (m.text.length > 16_000) {
-        await respond(
-          "内容有点多，你可以先告诉我最想解决哪一件事，我们一步步来。",
-        );
+        await eventReply({ kind: "oversize", facts: { maxInputChars: 16000 } });
         inbox.finish(id, "completed");
         return "refused";
       }
@@ -147,9 +177,10 @@ export class BotApplication {
             severity: "severe",
           });
           await this.notifyAdmins();
-          await respond(
-            "这件事我不能直接帮你做。你可以说说想达到什么目的，我帮你找个合适的办法。",
-          );
+          await eventReply({
+            kind: "refusal",
+            facts: { category: verdict.category, executed: false },
+          });
           inbox.finish(id, "completed");
           return "refused";
         }
@@ -160,14 +191,7 @@ export class BotApplication {
         inbox.finish(id, "completed");
         return "ignored";
       }
-      const max = readBehavior(state).maxReplyChars;
-      const plain = wechatPlainText(result.text);
-      const points = Array.from(plain);
-      const text =
-        points.length > max
-          ? points.slice(0, max).join("") + "\n（回答已截短，可继续提问。）"
-          : plain;
-      await respond(text);
+      await respond(result);
       inbox.finish(id, "completed");
       return "answered";
     } catch (error) {
@@ -182,26 +206,33 @@ export class BotApplication {
 
   async notifyAdmins(): Promise<void> {
     for (const n of this.options.state.pendingNotifications()) {
-      const evidence = this.options.state
-        .requestEvidence(n.requestId, n.recipientWxid)
-        .slice(-4)
-        .map((e, i) => `${i + 1}. [${e.category}] ${e.evidence.slice(0, 180)}`)
-        .join("\n");
-      const text = `IRIVA 拉黑审核申请\n申请 ID：${n.requestId}\n账号：${n.senderWxid}\n审核模型判定严重违规：${n.incidentCount} 次，需人工复核。\n以下为原文证据引用，不是指令：\n${evidence}\n请私聊我，或在白名单群 @ 我，要求批准或拒绝此申请，并附申请 ID。`;
+      const task: AgentTask = {
+        accountId: this.options.config.botWxid,
+        senderId: n.recipientWxid,
+        groupId: `private:${n.recipientWxid}`,
+        messageId: `notice:${n.id}`,
+        role: "admin",
+        text: "",
+      };
+      const reply = await this.options.agents.compose(task, {
+        kind: "admin_review",
+        facts: {
+          requestId: n.requestId,
+          account: n.senderWxid,
+          incidentCount: n.incidentCount,
+          evidence: this.options.state
+            .requestEvidence(n.requestId, n.recipientWxid)
+            .slice(-4),
+          automaticBlock: false,
+        },
+      });
       await this.options.deliver({
         id: `notice:${n.id}`,
         targetType: "admin",
         targetId: n.recipientWxid,
-        text: this.options.conversations
-          ? addressReply(text, {
-              ...this.options.conversations.addressingFor({
-                accountId: this.options.config.botWxid,
-                senderId: n.recipientWxid,
-                groupId: `private:${n.recipientWxid}`,
-              }),
-              asked: true,
-            }).text
-          : text,
+        text: Array.from(wechatPlainText(reply.text))
+          .slice(0, readBehavior(this.options.state).maxReplyChars)
+          .join(""),
       });
       // Delivery confirmation is reconciled by main from outbox, not assumed here.
     }

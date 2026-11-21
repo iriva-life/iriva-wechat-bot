@@ -66,27 +66,3 @@ export function isWorkerStatusQuestion(text: string): boolean {
     );
   return /^(?:workers?|工作任务|工作进程|任务进度)$/.test(remaining);
 }
-export function formatWorkerStatus(jobs: WorkerJobs): string {
-  const rows = jobs.list();
-  if (!rows.length)
-    return `当前没有运行中的 worker，最多同时运行 ${jobs.limit} 个。`;
-  const stages: Record<string, string> = {
-    starting: "准备中",
-    reviewing: "检查请求",
-    working: "处理中",
-    replying: "组织回复",
-    summarizing: "整理聊天记录",
-    tool_call: "调用工具",
-    tool_call_update: "更新工具状态",
-    agent_message_chunk: "生成结果",
-  };
-  return (
-    `当前 ${rows.length}/${jobs.limit} 个 worker：\n` +
-    rows
-      .map(
-        (j) =>
-          `${j.slot + 1}号：${j.kind === "summary" ? "聊天总结" : "回答任务"}，${stages[j.stage] ?? j.stage}${j.tool ? `（${j.tool}）` : ""}，${j.elapsedSeconds}秒。\n来源：${j.groupId}；用户：${j.senderId}`,
-      )
-      .join("\n")
-  );
-}

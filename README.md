@@ -40,7 +40,7 @@ Bot 微信号 `iriva2026`。管理员白名单为 `EnRomantice`、`quietfire1`�
 | `packages/` | 固定提交构建的 Wayline 包与来源说明 |
 | `docs/macmini-bridge-runbook.md` | 微信桥接审计、构建、安装与还原手册 |
 
-生产环境有 5 个 worker，回答与后台总结共用 5 个任务槽位；leader 只组织回答，reviewer 独立审核。每个进程使用 Wayline Runtime 和独立 SQLite，经 ACP v1 同步任务和工具进度。当前问题结合会话聊天记录和检索到的 memory，一同提供给 worker 和 leader。私聊按人隔离，群聊共享本群记录，跨来源记忆保持可见范围。活动记录超过 100 条后台压缩为 20 条，保留原始记录和总结期间的新消息。详见根目录 [CONTEXT_MEMORY.md](CONTEXT_MEMORY.md)。
+生产环境有 5 个 worker，回答与后台总结共用 5 个任务槽位；leader 只组织回答，reviewer 独立审核。每个进程使用 Wayline Runtime 和独立 SQLite，经 ACP v1 同步任务和工具进度。当前问题结合会话聊天记录和检索到的 memory，一同提供给 worker 和 leader。整条微信回复由 leader 自然措辞，包括称呼及忙碌等状态提示，宿主不拼接固定文案。私聊按人隔离，群聊共享本群记录，跨来源记忆保持可见范围。活动记录超过 100 条后台压缩为 20 条，保留原始记录和总结期间的新消息。详见根目录 [CONTEXT_MEMORY.md](CONTEXT_MEMORY.md)。
 
 ## 人设与业务知识
 

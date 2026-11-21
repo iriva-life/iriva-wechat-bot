@@ -13,6 +13,9 @@ import {
   type HostTool,
 } from "../src/agents/index.js";
 
+const reply = (text: string, askedAddressing = false) =>
+  JSON.stringify({ text, askedAddressing });
+
 const task: AgentTask = {
   accountId: "bot",
   senderId: "wxid_other",
@@ -50,7 +53,8 @@ test("all replies delegate work first; leader has zero tools and sees worker res
       async complete(request) {
         requests.push(request);
         return {
-          content: requests.length === 1 ? "worker facts" : "final wording",
+          content:
+            requests.length === 1 ? "worker facts" : reply("final wording"),
         };
       },
     },
@@ -131,7 +135,11 @@ test("trusted task principal is frozen and unique sessions do not mix questions"
             toolCalls: [{ id: "read", name: "knowledge_read", arguments: {} }],
           };
         }
-        return { content: "answer" };
+        return {
+          content: request.systemPrompt?.includes("leader")
+            ? reply("answer")
+            : "answer",
+        };
       },
     },
     [
@@ -284,10 +292,17 @@ test("production child processes delegate and broker tools with trusted host ide
         };
       else message = { content: "verified facts" };
     } else {
-      seen.push("leader");
+      const input = JSON.parse(body.messages.at(-1).content);
+      seen.push(input.event ? "leader-event" : "leader");
       assert.equal(body.tools, undefined);
-      assert.match(body.messages.at(-1).content, /verified facts/);
-      message = { content: "整理后的回答" };
+      if (input.event) {
+        assert.equal(input.event.kind, "busy");
+        assert.equal(input.event.facts.active, 5);
+        message = { content: reply("XM，我先回完手里的消息，你稍等一会儿。") };
+      } else {
+        assert.match(body.messages.at(-1).content, /verified facts/);
+        message = { content: reply("整理后的回答") };
+      }
     }
     response.writeHead(200, { "Content-Type": "application/json" });
     response.end(JSON.stringify({ choices: [{ message }] }));
@@ -319,7 +334,17 @@ test("production child processes delegate and broker tools with trusted host ide
   try {
     assert.equal((await agents.answer(task)).text, "整理后的回答");
     assert.equal((await agents.review(task)).severe, false);
-    assert.deepEqual(seen, ["worker", "worker", "leader", "reviewer"]);
+    assert.equal(
+      (await agents.compose(task, { kind: "busy", facts: { active: 5 } })).text,
+      "XM，我先回完手里的消息，你稍等一会儿。",
+    );
+    assert.deepEqual(seen, [
+      "worker",
+      "worker",
+      "leader",
+      "reviewer",
+      "leader-event",
+    ]);
     assert.equal(principals[0].senderId, task.senderId);
     assert.equal(principals[0].role, "other");
   } finally {
@@ -369,7 +394,7 @@ test(
             body.messages.find((m: any) => m.role === "user").content,
           );
           assert.equal(input.workerResult, `结果：${question}`);
-          response = { content: `答复：${question}` };
+          response = { content: reply(`答复：${question}`) };
         }
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ choices: [{ message: response }] }));
