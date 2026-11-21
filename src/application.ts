@@ -4,6 +4,7 @@ import type { BotConfig } from "./config.js";
 import type { Inbox } from "./inbox.js";
 import { StateStore, type DocumentKind } from "./policy/index.js";
 import { runAdminBash } from "./admin-bash.js";
+import { wechatPlainText } from "./wechat/plain-text.js";
 import type { Delivery, InboundMessage } from "./wechat/index.js";
 
 export interface AgentService {
@@ -105,11 +106,12 @@ export class BotApplication {
         return "ignored";
       }
       const max = readBehavior(state).maxReplyChars;
-      const points = Array.from(result.text);
+      const plain = wechatPlainText(result.text);
+      const points = Array.from(plain);
       const text =
         points.length > max
           ? points.slice(0, max).join("") + "\n（回答已截短，可继续提问。）"
-          : result.text;
+          : plain;
       await deliver({
         id: `reply:${id}`,
         ...replyTarget,
@@ -202,7 +204,7 @@ export function applicationTools(
     {
       name: "admin_knowledge_list",
       description:
-        "管理员查看知识库目录（条目 key、字符数、最后修改时间），不一次读取全部正文。可按 key 前缀筛选，再用 admin_document_get 查看、admin_document_set 修改。知识库存储在 SQLite，key 是逻辑目录，不是任意文件路径。",
+        "管理员查看知识库目录（条目 key、字符数、最后修改时间），不一次读取全部正文。可按 key 前缀筛选，再用 admin_document_read 查看、admin_document_set 修改。知识库存储在 SQLite，key 是逻辑目录，不是任意文件路径。",
       roles: ["admin"],
       inputSchema: objectSchema({ prefix: string }),
       async execute(a, t) {

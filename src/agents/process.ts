@@ -7,6 +7,8 @@ import {
   WORKER,
   LEADER,
   REVIEWER,
+  authorizationPrompt,
+  WECHAT_STYLE,
   type AgentTask,
   type HostTool,
   type ModerationVerdict,
@@ -251,7 +253,7 @@ export async function createProcessAgentOrchestrator(
       const work = await worker.run(
         task,
         workerSessionId,
-        [WORKER, globalPrompt],
+        [WORKER, globalPrompt, authorizationPrompt(task, selected)],
         JSON.stringify({ question: task.text, context }),
         selected,
         signal,
@@ -261,7 +263,7 @@ export async function createProcessAgentOrchestrator(
         await leader.run(
           task,
           leaderSessionId,
-          [LEADER, globalPrompt],
+          [LEADER, globalPrompt, authorizationPrompt(task, selected), WECHAT_STYLE],
           JSON.stringify({ question: task.text, workerResult: work }),
           [],
           signal,

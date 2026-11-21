@@ -87,6 +87,7 @@ test(
               }),
             };
           } else if (system.includes("你是 IRIVA 的工作子 agent")) {
+            assert.match(system, /当前提问者角色：other/);
             const names = model.tools?.map((t) => t.function.name) ?? [];
             assert.ok(names.includes("knowledge_read"));
             assert.ok(names.includes("blocker_add_tools"));
@@ -119,12 +120,14 @@ test(
             }
           } else {
             assert.ok(system.includes("leader"));
+            assert.match(system, /当前提问者角色：other/);
+            assert.match(system, /微信消息必须使用纯文本/);
             roles.push("leader");
             assert.equal(model.tools, undefined);
             assert.ok(
               model.messages.some((m) => m.content?.includes("知识库暂无资料")),
             );
-            message = { role: "assistant", content: "二加二等于四。" };
+            message = { role: "assistant", content: "**二加二等于四。**" };
           }
           response.end(JSON.stringify({ choices: [{ message }] }));
         } else if (

@@ -10,7 +10,7 @@ Bot 微信号 `iriva2026`。管理员白名单为 `EnRomantice`、`quietfire1`�
 
 模型：OpenRouter `openai/gpt-5.6-luna`，Base URL `https://openrouter.ai/api/v1`。密钥在 Mac mini 项目根目录 `.env`（权限 0600），不提交源码。普通问题调用审核、工作、leader；工作工具调用可能增加模型轮次。
 
-验证：本机和 Mac mini 均通过 37 项自动测试，含真实应用入口 + 三个子进程 + 模拟 OneBot/模型的完整链路。两台机器均通过真实 OpenRouter 验证了审核、实际知识工具调用和 leader 回复。Mac mini 的旧代理配置已更新为本机当前 Rustdesk-server 快照，代理重启后 OpenRouter/npm 连通性验证通过；准备脚本也支持相同 OS/CPU 的离线依赖同步。
+验证：本机和 Mac mini 均通过 39 项自动测试，含真实应用入口 + 三个子进程 + 模拟 OneBot/模型的完整链路。两台机器均通过真实 OpenRouter 验证了审核、实际知识工具调用和 leader 回复。Mac mini 的旧代理配置已更新为本机当前 Rustdesk-server 快照，代理重启后 OpenRouter/npm 连通性验证通过；准备脚本也支持相同 OS/CPU 的离线依赖同步。
 
 ## 架构与目录
 
@@ -87,6 +87,8 @@ npm run admin -- bind quietfire1 wxid_ADMIN2
 这些是可选的人工绑定占位示例，不能直接照抄；管理员也会自动匹配真实通讯录微信号，缺失映射不会阻塞其他已识别管理员使用。随后填写 `config/local.json` 的真实 `allowedGroupIds`。默认 `dryRun:true`：调用模型并验证流程，但只记录草稿长度，不投递微信。核验通过后才改 `dryRun:false` 并运行 `bash scripts/run-macmini.sh`。提供 LaunchAgent 示例但没有加载；激活前完成微信收发验收。
 
 ## 投递与恢复
+
+微信回复采用纯文本；leader 被明确要求不用 Markdown，发送前还会转换常见标题、加粗、列表、链接和代码围栏，命令正文保持原样。worker 与 leader 都收到宿主根据实际 wxid 判定的当前角色和可委派工具列表，查询权限时不会把 leader 自身没有工具误认为管理员没有权限。工具执行时继续校验最新权限。
 
 默认每气泡最多 220 个 Unicode grapheme，优先按段落/标点拆分。每个气泡发送前等待约 `500ms + 字数×35ms ±250ms`，最高 12 秒，保持队列顺序。这是阅读节奏配置，不承诺规避平台限制。
 

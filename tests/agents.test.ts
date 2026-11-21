@@ -64,6 +64,10 @@ test("all replies delegate work first; leader has zero tools and sees worker res
       ["knowledge_write"],
     );
     assert.deepEqual(requests[1].tools, []);
+    for (const request of requests) {
+      assert.match(request.systemPrompt ?? "", /当前提问者角色：admin/);
+      assert.match(request.systemPrompt ?? "", /knowledge_write/);
+    }
     assert.match(requests[1].messages.at(-1)!.content, /worker facts/);
     assert.notEqual(result.workerSessionId, result.leaderSessionId);
   } finally {
@@ -81,6 +85,7 @@ test("other cannot invoke administrator tools even with a forged model tool call
           request.tools.some((tool) => tool.name === "knowledge_write"),
           false,
         );
+        assert.match(request.systemPrompt ?? "", /当前提问者角色：other/);
         calls++;
         if (calls === 1)
           return {
