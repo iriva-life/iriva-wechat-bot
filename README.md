@@ -10,7 +10,7 @@ Bot 微信号 `iriva2026`。管理员白名单为 `EnRomantice`、`quietfire1`�
 
 模型：OpenRouter `openai/gpt-5.6-luna`，Base URL `https://openrouter.ai/api/v1`。密钥在 Mac mini 项目根目录 `.env`（权限 0600），不提交源码。普通问题调用审核、工作、leader；工作工具调用可能增加模型轮次。
 
-验证：本机和 Mac mini 均通过 39 项自动测试，含真实应用入口 + 三个子进程 + 模拟 OneBot/模型的完整链路。两台机器均通过真实 OpenRouter 验证了审核、实际知识工具调用和 leader 回复。Mac mini 的旧代理配置已更新为本机当前 Rustdesk-server 快照，代理重启后 OpenRouter/npm 连通性验证通过；准备脚本也支持相同 OS/CPU 的离线依赖同步。
+验证：本机和 Mac mini 均通过 47 项自动测试，含真实应用入口 + 五个 worker、leader 和 reviewer 子进程 + 模拟 OneBot/模型的完整链路。两台机器均通过真实 OpenRouter 验证了审核、实际知识工具调用和 leader 回复。Mac mini 的旧代理配置已更新为本机当前 Rustdesk-server 快照，代理重启后 OpenRouter/npm 连通性验证通过；准备脚本也支持相同 OS/CPU 的离线依赖同步。
 
 ## 架构与目录
 
@@ -32,13 +32,15 @@ Bot 微信号 `iriva2026`。管理员白名单为 `EnRomantice`、`quietfire1`�
 | `src/policy/` | wxid 权限、知识库/配置、违规记录、管理员审批 |
 | `src/agents/` | Wayline 独立进程、工具 IPC、模型适配 |
 | `src/application.ts` | 触发规则、业务工具、违规通知 |
+| `src/conversation.ts` / `src/conversation-maintenance.ts` | 聊天历史、个人/群 memory、100→20 后台总结 |
+| `src/jobs.ts` | 五槽并发、实际进度、管理员状态查询 |
 | `src/inbox.ts` | 重复消息与结果不明任务的处理账本 |
 | `src/main.ts` | 生命周期、单实例锁、接入和投递装配 |
 | `config/example.json` | 公开配置模板，不含实际 wxid |
 | `packages/` | 固定提交构建的 Wayline 包与来源说明 |
 | `docs/macmini-bridge-runbook.md` | 微信桥接审计、构建、安装与还原手册 |
 
-生产环境每个 agent 一个 OS 子进程、一个 Wayline Runtime、一个 SQLite 文件。所有实际任务先交 worker，leader 没有业务工具。reviewer 独立审核原始消息且无工具。每次提问独立创建会话，不混用不同群成员的历史；管理员可维护全局及当前群的预设上下文。
+生产环境有 5 个 worker，回答与后台总结共用 5 个任务槽位；leader 只组织回答，reviewer 独立审核。每个进程使用 Wayline Runtime 和独立 SQLite，经 ACP v1 同步任务和工具进度。当前问题结合会话聊天记录和检索到的 memory，一同提供给 worker 和 leader。私聊按人隔离，群聊共享本群记录，跨来源记忆保持可见范围。活动记录超过 100 条后台压缩为 20 条，保留原始记录和总结期间的新消息。详见根目录 [CONTEXT_MEMORY.md](CONTEXT_MEMORY.md)。
 
 ## 人设与业务知识
 
@@ -49,7 +51,7 @@ Bot 微信号 `iriva2026`。管理员白名单为 `EnRomantice`、`quietfire1`�
 ## 权限规则
 
 - **admin**：公开微信号采用本地白名单；程序自动用可信微信通讯录的真实 `alias` 匹配内部 wxid，不要求逐个手工校验。尚未出现在通讯录的白名单项保持待匹配，不阻塞运行。可列出知识库目录、读取/修改条目、设置/清空上下文、修改全局 prompt/行为、审批/拒绝拉黑和解除黑名单；还可明确请求 `admin_bash`，以 Mac mini 的 `ender` 用户运行 Bash（默认 30 秒、最长 60 秒，输出最多 16000 字符）。Bash 是实际主机权限，不是沙盒，能够修改该用户可访问的文件；不注入模型密钥、OneBot token 或 BASH_ENV，不提供 sudo 密码。管理员名单从本机配置加载，身份绑定可来自本机配置或已鉴权桥接通讯录，不能靠修改全局 prompt 提权。
-- **other**：默认角色。只获得 `knowledge_read`、`blocker_add_tools`；后者只能请求审核当前消息，不能指定他人、计次或直接拉黑。模型伪造工具调用也会被宿主权限校验拦截。
+- **other**：默认角色。只获得 `knowledge_read`、当前会话可见的 `memory_read` / `memory_remember`、`blocker_add_tools`；后者只能请求审核当前消息，不能指定他人、计次或直接拉黑。模型伪造工具调用也会被宿主权限校验拦截。
 - **blocker**：入口直接忽略，不调用模型。
 - 严重违规仅三类：明确窃取密钥/他人私密数据、绕过权限修改系统、破坏性操作。引用案例、正常讨论和一般拒绝不计次。审核输出必须包含原文精确证据；审核失败不计次。
 - 同一个 bot/message ID 只计一次；第 **4** 次生成待审申请，带证据通知所有已绑定 admin。绑定缺失的通知保持待处理。任何 admin 可批准/拒绝，批准才生效，其他 admin 的过期通知取消。模型审核并非绝对准确，管理员负责最终复核。

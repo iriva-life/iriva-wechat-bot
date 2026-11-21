@@ -4,6 +4,9 @@ import { loadConfig } from "./config.js";
 import { Inbox } from "./inbox.js";
 import { StateStore } from "./policy/index.js";
 import { BotApplication, applicationTools } from "./application.js";
+import { ConversationStore } from "./conversation.js";
+import { ConversationMaintenance } from "./conversation-maintenance.js";
+import { WorkerJobs } from "./jobs.js";
 import { bindDirectoryAdmins } from "./admin-directory.js";
 import {
   createProcessAgentOrchestrator,
@@ -31,9 +34,11 @@ let outbox: BubbleOutbox | undefined;
 let agents:
   | Awaited<ReturnType<typeof createProcessAgentOrchestrator>>
   | undefined;
-let work = Promise.resolve();
+const work = new Set<Promise<void>>();
+const jobs = new WorkerJobs(5);
+let conversations: ConversationStore | undefined;
+let maintenance: ConversationMaintenance | undefined;
 let stopping = false;
-let queued = 0;
 let timer: ReturnType<typeof setInterval> | undefined;
 const log = (event: string, details: Record<string, unknown> = {}) =>
   console.log(
@@ -48,11 +53,14 @@ async function cleanup() {
   stopping = true;
   clearInterval(timer);
   client?.close();
-  await work;
+  const summaryStop = maintenance?.close();
+  await Promise.allSettled(work);
+  await summaryStop;
   await outbox?.close();
   await agents?.close();
   inbox?.close();
   state?.close();
+  conversations?.close();
   rmSync(lock, { recursive: true, force: true });
 }
 try {
@@ -63,6 +71,7 @@ try {
     state.bindIdentity({ ...b, source: "manual", verified: true });
   inbox = new Inbox(join(dataDir, "inbox.sqlite"));
   const db = state;
+  conversations = new ConversationStore(join(dataDir, "conversations.sqlite"));
   let app: BotApplication;
   const reviewCurrent = async (task: Readonly<AgentTask>) => {
     if (db.roleFor(task.senderId) !== "other")
@@ -100,7 +109,8 @@ try {
       apiKey: required("MODEL_API_KEY"),
       model: required("MODEL_ID"),
     },
-    tools: applicationTools(db, reviewCurrent),
+    tools: applicationTools(db, reviewCurrent, { conversations, jobs }),
+    onProgress: (task, stage, tool) => jobs.update(task.jobId, stage, tool),
     getGlobalPrompt: () =>
       db.getDocument("prompt", "global")?.value ??
       "你叫 IRIVA，通过微信私聊和群聊帮助大家解答问题。回复清晰、简洁。",
@@ -108,6 +118,7 @@ try {
       [
         db.getDocument("context", "global")?.value,
         db.getDocument("context", task.groupId)?.value,
+        task.conversationContext ?? conversations!.contextFor(task),
       ]
         .filter(Boolean)
         .join("\n"),
@@ -136,7 +147,22 @@ try {
     outbox!.enqueue(d);
     void drain().catch(report);
   };
-  app = new BotApplication({ config, state: db, inbox, agents, deliver });
+  app = new BotApplication({
+    config,
+    state: db,
+    inbox,
+    agents,
+    deliver,
+    conversations,
+    jobs,
+  });
+  maintenance = new ConversationMaintenance(
+    conversations,
+    jobs,
+    (task, snapshot) => agents!.summarize(task, snapshot),
+    (success) =>
+      log(success ? "context_compacted" : "context_compaction_deferred"),
+  );
   let lastDirectoryAttempt = 0;
   const refreshAdmins = async () => {
     if (
@@ -166,27 +192,22 @@ try {
     },
     onMessage: (m) => {
       if (stopping) return;
-      if (queued >= 100) {
-        log("ingress_overload", { dropped: true });
-        return;
-      }
-      queued++;
-      work = work
-        .then(async () => {
-          if (
-            !stopping &&
-            (m.conversationType === "private" ||
-              (config.allowedGroupIds.includes(m.groupId) &&
-                m.mentions.includes(config.botWxid)))
-          ) {
-            await refreshAdmins();
-          }
-          if (!stopping) await app.process(m);
-        })
+      // Independent conversations run concurrently; admission is enforced by the shared five-slot pool.
+      const operation = (async () => {
+        if (
+          m.conversationType === "private" ||
+          (config.allowedGroupIds.includes(m.groupId) &&
+            m.mentions.includes(config.botWxid))
+        )
+          void refreshAdmins().catch(report);
+        if (!stopping) await app.process(m);
+      })()
         .catch(report)
         .finally(() => {
-          queued--;
+          work.delete(operation);
+          maintenance?.kick();
         });
+      work.add(operation);
     },
   });
   outbox = new BubbleOutbox(join(dataDir, "outbox.sqlite"), {
@@ -206,6 +227,7 @@ try {
   });
   timer = setInterval(() => {
     void drain().catch(report);
+    maintenance?.kick();
   }, 5000);
   process.once("SIGINT", () => {
     void cleanup().catch(report);

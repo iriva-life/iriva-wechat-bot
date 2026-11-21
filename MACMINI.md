@@ -101,3 +101,7 @@ kill -TERM "$(cat data/desktop.lock/pid)"
 ```
 
 等待 `data/desktop.lock` 和 `data/host.lock` 正常消失。不要在处理模型请求期间直接杀微信或删除锁。
+
+## Context 与 worker
+
+聊天记录和 memory 从本版本部署起保存在 `data/conversations.sqlite`。超过 100 条由后台 worker 压成 20 条，原始记录保留；回答与总结最多共用 5 个 worker。管理员说“查看 worker 状态”可查看实际进度，满载也可查询。完整规则见 [CONTEXT_MEMORY.md](CONTEXT_MEMORY.md)。

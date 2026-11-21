@@ -328,3 +328,113 @@ test("production child processes delegate and broker tools with trusted host ide
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+test(
+  "five real ACP workers execute concurrently with tool progress and isolated results; sixth is rejected",
+  { timeout: 20_000 },
+  async () => {
+    const directory = await mkdtemp(join(tmpdir(), "iriva-acp-pool-"));
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    let executing = 0;
+    const updates: string[] = [];
+    const errors: unknown[] = [];
+    const server = createServer(async (req, res) => {
+      try {
+        const chunks: Buffer[] = [];
+        for await (const chunk of req) chunks.push(chunk);
+        const body = JSON.parse(Buffer.concat(chunks).toString());
+        const system = body.messages.find(
+          (m: any) => m.role === "system",
+        ).content;
+        const question = JSON.parse(
+          body.messages.find((m: any) => m.role === "user").content,
+        ).question;
+        let response: any;
+        if (system.includes("你是 IRIVA 的工作子 agent")) {
+          response = body.messages.some((m: any) => m.role === "tool")
+            ? { content: `结果：${question}` }
+            : {
+                content: null,
+                tool_calls: [
+                  {
+                    id: "read",
+                    type: "function",
+                    function: { name: "knowledge_read", arguments: "{}" },
+                  },
+                ],
+              };
+        } else {
+          const input = JSON.parse(
+            body.messages.find((m: any) => m.role === "user").content,
+          );
+          assert.equal(input.workerResult, `结果：${question}`);
+          response = { content: `答复：${question}` };
+        }
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ choices: [{ message: response }] }));
+      } catch (e) {
+        errors.push(e);
+        res.writeHead(500);
+        res.end("{}");
+      }
+    });
+    await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+    const port = (server.address() as { port: number }).port;
+    const agents = await createProcessAgentOrchestrator({
+      dataDir: directory,
+      modelConfig: {
+        baseUrl: `http://127.0.0.1:${port}/v1`,
+        apiKey: "",
+        model: "mock",
+      },
+      onProgress: (_t, stage) => updates.push(stage),
+      tools: [
+        {
+          ...edit,
+          name: "knowledge_read",
+          roles: ["other"],
+          async execute() {
+            executing++;
+            await gate;
+            return { fact: "safe" };
+          },
+        },
+      ],
+    });
+    const tasks = Array.from({ length: 5 }, (_, i) =>
+      agents.answer({
+        ...task,
+        senderId: `wxid_${i}`,
+        text: `问题${i}`,
+        messageId: `${i}`,
+      }),
+    );
+    try {
+      const deadline = Date.now() + 8000;
+      while (executing < 5 && Date.now() < deadline)
+        await new Promise((r) => setTimeout(r, 20));
+      assert.equal(executing, 5);
+      assert.equal(updates.filter((s) => s === "tool_call").length, 5);
+      await assert.rejects(
+        agents.answer({ ...task, text: "sixth" }),
+        /Workers busy/,
+      );
+      release();
+      const results = await Promise.all(tasks);
+      assert.deepEqual(
+        results.map((r) => r.text),
+        Array.from({ length: 5 }, (_, i) => `答复：问题${i}`),
+      );
+      assert.ok(updates.includes("tool_call_update"));
+      assert.deepEqual(errors, []);
+    } finally {
+      release();
+      await Promise.allSettled(tasks);
+      await agents.close();
+      server.closeAllConnections();
+      await new Promise<void>((r) => server.close(() => r()));
+      await rm(directory, { recursive: true, force: true });
+    }
+  },
+);

@@ -7,125 +7,167 @@ import {
   openSessionStore,
   type ManagedSessionStore,
 } from "wayline-agent-runtime/storage";
+import { AcpUpdateProjector } from "wayline-agent-runtime/acp";
+import {
+  agent,
+  methods,
+  ndJsonStream,
+  PROTOCOL_VERSION,
+  type AgentConnection,
+} from "@agentclientprotocol/sdk";
+import { Readable, Writable } from "node:stream";
+import { realpathSync } from "node:fs";
 import { openAICompatibleModel, type ModelOptions } from "./model.js";
-import { randomUUID } from "node:crypto";
 
-// Internal executable only. It hosts exactly one independent Wayline runtime.
+// Bootstrap credentials stay on the private Node IPC channel. All session traffic uses ACP stdio.
 let runtime: AgentRuntime | undefined;
 let store: ManagedSessionStore | undefined;
-const signals = new Map<string, AbortController>();
-const calls = new Map<
+let connection: AgentConnection | undefined;
+const sessions = new Map<
   string,
-  { resolve(value: unknown): void; reject(error: Error): void }
+  { prompts: string[]; tools: string[]; controller?: AbortController }
 >();
-const sessionRequests = new Map<string, string>();
-function send(value: unknown) {
-  if (process.connected) process.send?.(value);
+let stopping = false;
+async function stop() {
+  if (stopping) return;
+  stopping = true;
+  for (const s of sessions.values()) s.controller?.abort();
+  await runtime?.close();
+  await store?.close();
+  connection?.close();
+  process.disconnect?.();
 }
-function fail(message: Record<string, unknown>, error: unknown) {
-  send({
-    type: "error",
-    id: message.id,
-    error: error instanceof Error ? error.message : "Agent process failed",
-  });
-}
-process.on("message", (input: unknown) => {
-  void dispatch(input).catch((error) =>
-    fail(input as Record<string, unknown>, error),
-  );
-});
 process.on("disconnect", () => {
   void stop().finally(() => process.exit(0));
 });
-
-async function stop() {
-  for (const controller of signals.values()) controller.abort();
-  for (const pending of calls.values())
-    pending.reject(new Error("Agent process shutting down"));
-  calls.clear();
-  await runtime?.close();
-  await store?.close();
-}
-async function dispatch(input: unknown) {
-  if (!input || typeof input !== "object") return;
-  const message = input as Record<string, any>;
-  if (message.type === "init") {
-    if (runtime) throw new Error("Runtime already initialized");
-    store = await openSessionStore({
-      namespace: message.name,
-      sqlite: { filename: message.filename },
+process.on("message", (m: any) => {
+  if (m?.type === "close") void stop().finally(() => process.exit(0));
+  if (m?.type === "init")
+    void initialize(m).catch(() => {
+      process.send?.({ type: "error" });
+      void stop().finally(() => process.exit(1));
     });
-    runtime = createRuntime({
-      model: openAICompatibleModel(message.model as ModelOptions),
-      sessionStore: store,
-      builtins: { bash: false, compression: false },
-      config: { maxToolRounds: 8, maxToolCalls: 12, timeoutMs: 120_000 },
-      tools: (message.tools as ToolDefinition[]).map((tool) => ({
-        ...tool,
-        executionPolicy: "exclusive",
-        async execute(args, context) {
-          context.signal?.throwIfAborted();
-          const requestId = sessionRequests.get(context.session.id);
-          if (!requestId) throw new Error("No active host task");
-          const callId = randomUUID();
-          return new Promise((resolve, reject) => {
-            const abort = () => {
-              calls.delete(callId);
-              reject(new Error("Tool call cancelled"));
-            };
-            context.signal?.addEventListener("abort", abort, { once: true });
-            calls.set(callId, {
-              resolve(value) {
-                context.signal?.removeEventListener("abort", abort);
-                resolve(value);
-              },
-              reject(error) {
-                context.signal?.removeEventListener("abort", abort);
-                reject(error);
-              },
-            });
-            send({ type: "tool", requestId, callId, name: tool.name, args });
-          });
-        },
-      })),
-    });
-    send({ type: "ready", pid: process.pid });
-  } else if (message.type === "toolResult") {
-    const pending = calls.get(message.callId);
-    calls.delete(message.callId);
-    if (message.error) pending?.reject(new Error(message.error));
-    else pending?.resolve(message.result);
-  } else if (message.type === "run") {
-    if (!runtime) throw new Error("Runtime not initialized");
-    const controller = new AbortController();
-    signals.set(message.id, controller);
-    sessionRequests.set(message.sessionId, message.id);
-    try {
-      await runtime.createSession({
-        sessionId: message.sessionId,
-        tools: message.tools,
+});
+async function initialize(message: {
+  name: string;
+  filename: string;
+  model: ModelOptions;
+  tools: ToolDefinition[];
+}) {
+  if (runtime) throw new Error("Already initialized");
+  store = await openSessionStore({
+    namespace: message.name,
+    sqlite: { filename: message.filename },
+  });
+  runtime = createRuntime({
+    model: openAICompatibleModel(message.model),
+    sessionStore: store,
+    builtins: { bash: false, compression: false },
+    config: { maxToolRounds: 8, maxToolCalls: 12, timeoutMs: 120_000 },
+    tools: message.tools.map((tool) => ({
+      ...tool,
+      executionPolicy: "exclusive",
+      async execute(args, context) {
+        context.signal?.throwIfAborted();
+        if (!sessions.get(context.session.id)?.controller)
+          throw new Error("No active session");
+        const response = await connection!.client.request<{ result: unknown }>(
+          "_iriva/tool",
+          { sessionId: context.session.id, name: tool.name, args },
+        );
+        return response.result;
+      },
+    })),
+  });
+  const root = realpathSync(process.cwd());
+  connection = agent({ name: `iriva-${message.name}` })
+    .onRequest(methods.agent.initialize, () => ({
+      protocolVersion: PROTOCOL_VERSION,
+      agentCapabilities: { loadSession: false, promptCapabilities: {} },
+      authMethods: [],
+      agentInfo: { name: `iriva-${message.name}`, version: "0.1.0" },
+    }))
+    .onRequest(methods.agent.session.new, async ({ params }) => {
+      if (realpathSync(params.cwd) !== root || params.mcpServers.length)
+        throw new Error("Unsupported workspace/MCP configuration");
+      const metadata = params._meta?.iriva as
+        | { sessionId: string; tools: string[]; prompts: string[] }
+        | undefined;
+      if (
+        !metadata ||
+        typeof metadata.sessionId !== "string" ||
+        !Array.isArray(metadata.tools) ||
+        !Array.isArray(metadata.prompts) ||
+        metadata.prompts.some((p) => typeof p !== "string")
+      )
+        throw new Error("Host session metadata required");
+      if (sessions.has(metadata.sessionId))
+        throw new Error("Duplicate session");
+      const created = await runtime!.createSession({
+        sessionId: metadata.sessionId,
+        tools: metadata.tools,
       });
-      const result = await runtime.prompt({
-        sessionId: message.sessionId,
-        tools: message.tools,
+      sessions.set(created.sessionId, {
+        tools: metadata.tools,
+        prompts: metadata.prompts,
+      });
+      return { sessionId: created.sessionId };
+    })
+    .onRequest(methods.agent.session.prompt, async (context) => {
+      const state = sessions.get(context.params.sessionId);
+      if (!state || state.controller) throw new Error("Session unavailable");
+      const controller = new AbortController();
+      state.controller = controller;
+      const abort = () => controller.abort();
+      context.signal.addEventListener("abort", abort, { once: true });
+      const projector = new AcpUpdateProjector({
+        sessionId: context.params.sessionId,
+        client: context.client,
+        maxPendingUpdates: 256,
         signal: controller.signal,
-        promptInjections: message.prompts,
-        content: [{ type: "text", text: message.text }],
-        ...(message.tools.length === 0 ? { budget: { maxToolCalls: 0 } } : {}),
+        deliveryTimeoutMs: 10_000,
+        onFailure: () => controller.abort(),
       });
-      send({
-        type: "result",
-        id: message.id,
-        text: result.content.map((part) => part.text).join(""),
-      });
-    } finally {
-      signals.delete(message.id);
-      sessionRequests.delete(message.sessionId);
-    }
-  } else if (message.type === "cancel") signals.get(message.id)?.abort();
-  else if (message.type === "close") {
-    await stop();
-    send({ type: "closed" });
-    process.disconnect();
-  }
+      try {
+        const content = context.params.prompt.map((p) => {
+          if (p.type !== "text") throw new Error("Text only");
+          return { type: "text" as const, text: p.text };
+        });
+        const result = await runtime!.prompt({
+          sessionId: context.params.sessionId,
+          tools: state.tools,
+          promptInjections: state.prompts,
+          content,
+          signal: controller.signal,
+          onEvent: (e) => projector.observe(e),
+          ...(state.tools.length ? {} : { budget: { maxToolCalls: 0 } }),
+        });
+        projector.ensureFinalText(
+          result.content.map((p) => p.text).join(""),
+          result.runId,
+        );
+        await projector.drain();
+        return { stopReason: "end_turn" as const };
+      } catch (error) {
+        if (controller.signal.aborted)
+          return { stopReason: "cancelled" as const };
+        throw new Error("Agent run failed");
+      } finally {
+        context.signal.removeEventListener("abort", abort);
+        sessions.delete(context.params.sessionId);
+      }
+    })
+    .onNotification(methods.agent.session.cancel, ({ params }) => {
+      sessions.get(params.sessionId)?.controller?.abort();
+    })
+    .connect(
+      ndJsonStream(
+        Writable.toWeb(process.stdout),
+        Readable.toWeb(process.stdin) as unknown as ReadableStream<Uint8Array>,
+      ),
+    );
+  connection.closed.then(() => {
+    void stop().finally(() => process.exit(0));
+  });
+  process.send?.({ type: "ready" });
 }

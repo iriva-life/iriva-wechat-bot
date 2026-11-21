@@ -73,6 +73,16 @@ test(
             .filter((m) => m.role === "system")
             .map((m) => m.content ?? "")
             .join("\n");
+          if (!system.includes("独立的违规审核")) {
+            const input = JSON.parse(
+              model.messages.find((m) => m.role === "user")!.content!,
+            );
+            if (input.question === "分别是什么内容？") {
+              assert.match(input.context, /二加二等于四/);
+              assert.match(input.context, /二加二等于几/);
+              assert.doesNotMatch(input.context, /普通群消息/);
+            }
+          }
           let message: Record<string, unknown>;
           if (system.includes("独立的违规审核")) {
             roles.push("reviewer");
@@ -296,6 +306,19 @@ test(
       assert.equal((sent[1] as SentBody).user_id, "wxid_other");
       assert.equal(sent[1].group_id, undefined);
       assert.equal(models.length, 8);
+      emit({
+        ...base,
+        message_id: "private-followup",
+        message_type: "private",
+        group_id: undefined,
+        message: [{ type: "text", data: { text: "分别是什么内容？" } }],
+      });
+      await until(
+        () => sent.length === 3 || failures.length > 0,
+        "contextual follow-up",
+      );
+      assert.deepEqual(failures, []);
+      assert.equal(models.length, 12);
       child.kill("SIGTERM");
       await until(() => !!exit, "graceful SIGTERM shutdown", 8000);
       await exited;
@@ -312,12 +335,20 @@ test(
             .prepare("SELECT status FROM outbox")
             .all()
             .map((r) => r.status),
-          ["sent", "sent"],
+          ["sent", "sent", "sent"],
         );
       } finally {
         outbox.close();
       }
-      for (const name of ["worker", "leader", "reviewer"])
+      for (const name of [
+        "worker-1",
+        "worker-2",
+        "worker-3",
+        "worker-4",
+        "worker-5",
+        "leader",
+        "reviewer",
+      ])
         assert.ok(existsSync(join(dataDir, "agents", `${name}.sqlite`)));
     } finally {
       if (!exit) {

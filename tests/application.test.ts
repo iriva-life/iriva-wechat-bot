@@ -337,3 +337,134 @@ test("private replies need no mention and retain admin/other permissions", async
     f.close();
   }
 });
+
+test("five concurrent conversations, busy reply, and admin worker status bypasses saturation", async () => {
+  const { WorkerJobs } = await import("../src/jobs.js");
+  const { ConversationStore } = await import("../src/conversation.js");
+  const jobs = new WorkerJobs();
+  const history = new ConversationStore(":memory:");
+  const state = new StateStore(":memory:", {
+    adminAliases: config.adminAliases,
+  });
+  for (const b of config.identityBindings)
+    state.bindIdentity({ ...b, source: "manual", verified: true });
+  const inbox = new Inbox(":memory:");
+  const deliveries: Delivery[] = [];
+  let release!: () => void;
+  const gate = new Promise<void>((r) => (release = r));
+  let started = 0;
+  const app = new BotApplication({
+    config,
+    state,
+    inbox,
+    jobs,
+    conversations: history,
+    deliver: (d) => {
+      deliveries.push(d);
+    },
+    agents: {
+      review: async () => normal,
+      answer: async () => {
+        started++;
+        await gate;
+        return { text: "完成" };
+      },
+    },
+  });
+  const dm = (id: string, senderId: string, text = "问题") =>
+    message(id, {
+      senderId,
+      conversationType: "private",
+      groupId: `private:${senderId}`,
+      text,
+      mentions: [],
+    });
+  const work = Array.from({ length: 5 }, (_, i) =>
+    app.process(dm(`run${i}`, `wxid_user${i}`)),
+  );
+  try {
+    await new Promise((r) => setImmediate(r));
+    assert.equal(started, 5);
+    assert.equal(jobs.list().length, 5);
+    assert.equal(await app.process(dm("sixth", "wxid_six")), "refused");
+    assert.match(deliveries.at(-1)!.text, /繁忙/);
+    assert.equal(
+      await app.process(dm("status", "wxid_a", "现在正在工作的worker有哪些？")),
+      "answered",
+    );
+    assert.match(deliveries.at(-1)!.text, /5\/5/);
+    assert.equal(started, 5);
+    assert.equal(
+      await app.process(dm("status-other", "wxid_six", "查看worker状态")),
+      "refused",
+    );
+    assert.match(deliveries.at(-1)!.text, /繁忙/);
+    await app.process(
+      message("silent-context", { text: "我们周六练英语", mentions: [] }),
+    );
+    assert.equal(
+      history.snapshot(config.botWxid, "123@chatroom").rows.length,
+      1,
+    );
+  } finally {
+    release();
+    await Promise.allSettled(work);
+    assert.equal(jobs.list().length, 0);
+    history.close();
+    inbox.close();
+    state.close();
+  }
+});
+
+test("conversation snapshot is fixed before asynchronous review; later group messages cannot change references", async () => {
+  const { ConversationStore } = await import("../src/conversation.js");
+  const store = new ConversationStore(":memory:"),
+    state = new StateStore(":memory:", { adminAliases: config.adminAliases }),
+    inbox = new Inbox(":memory:");
+  let release!: () => void;
+  const gate = new Promise<void>((r) => (release = r));
+  let received: AgentTask | undefined;
+  const app = new BotApplication({
+    config,
+    state,
+    inbox,
+    conversations: store,
+    deliver: () => {},
+    agents: {
+      review: async () => {
+        await gate;
+        return normal;
+      },
+      answer: async (task) => {
+        received = task;
+        return { text: "完成" };
+      },
+    },
+  });
+  try {
+    await app.process(
+      message("history-before", {
+        mentions: [],
+        text: "先列出的条目是 faq/about",
+      }),
+    );
+    const running = app.process(
+      message("question-now", { text: "这个条目是什么" }),
+    );
+    await app.process(
+      message("history-later", {
+        mentions: [],
+        text: "稍后新发言 faq/pricing",
+      }),
+    );
+    release();
+    await running;
+    assert.match(received!.conversationContext!, /faq\/about/);
+    assert.doesNotMatch(received!.conversationContext!, /faq\/pricing/);
+  } finally {
+    release();
+    store.close();
+    state.close();
+    inbox.close();
+  }
+});
