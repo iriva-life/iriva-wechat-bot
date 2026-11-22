@@ -77,6 +77,12 @@ test(
             const input = JSON.parse(
               model.messages.find((m) => m.role === "user")!.content!,
             );
+            const context = JSON.parse(input.context);
+            assert.equal(
+              context.senderProfile.nickname,
+              context.currentSenderId === "wxid_other" ? "小蓝" : "管理员昵称",
+            );
+            assert.doesNotMatch(input.context, /私人备注/);
             if (input.question === "分别是什么内容？") {
               assert.match(input.context, /二加二等于四/);
               assert.match(input.context, /二加二等于几/);
@@ -133,6 +139,7 @@ test(
             assert.ok(system.includes("leader"));
             assert.match(system, /当前提问者角色：(other|admin)/);
             assert.match(system, /微信消息必须使用纯文本/);
+            assert.match(system, /不主动询问姓名或怎么称呼/);
             roles.push("leader");
             assert.equal(model.tools, undefined);
             assert.ok(
@@ -189,7 +196,13 @@ test(
             echo: command.echo,
             data:
               command.action === "get_contact_directory"
-                ? { groups: {} }
+                ? {
+                    groups: {},
+                    users: {
+                      wxid_other: { nickname: "小蓝", remark: "私人备注" },
+                      wxid_admin_a: { nickname: "管理员昵称" },
+                    },
+                  }
                 : { user_id: "wxid_bot" },
           }),
         );

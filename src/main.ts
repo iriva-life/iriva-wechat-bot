@@ -165,32 +165,40 @@ try {
       log(success ? "context_compacted" : "context_compaction_deferred"),
   );
   let lastDirectoryAttempt = 0;
-  const refreshAdmins = async () => {
-    if (Date.now() - lastDirectoryAttempt < 60_000) return;
+  let directoryRefresh: Promise<void> | undefined;
+  const refreshDirectory = (): Promise<void> => {
+    if (directoryRefresh) return directoryRefresh;
+    if (Date.now() - lastDirectoryAttempt < 60_000) return Promise.resolve();
     lastDirectoryAttempt = Date.now();
-    try {
-      const directory = await client!.request("get_contact_directory");
-      const groups = Object.entries(record(record(directory).groups))
-        .filter(([id]) => isGroupId(id))
-        .map(([id, value]) => ({
-          id,
-          name: String(
-            record(value).display ??
-              record(value).nickname ??
-              record(value).name ??
-              "",
-          ),
-        }));
-      writeFileSync(
-        join(dataDir, "groups.json"),
-        JSON.stringify({ updatedAt: new Date().toISOString(), groups }),
-        { mode: 0o600 },
-      );
-      const count = bindDirectoryAdmins(db, directory, config.botWxid);
-      if (count) log("admin_directory_bound", { count });
-    } catch {
-      log("admin_directory_pending");
-    }
+    directoryRefresh = (async () => {
+      try {
+        const directory = await client!.request("get_contact_directory");
+        conversations!.updateContactDirectory(config.botWxid, directory);
+        const groups = Object.entries(record(record(directory).groups))
+          .filter(([id]) => isGroupId(id))
+          .map(([id, value]) => ({
+            id,
+            name: String(
+              record(value).display ??
+                record(value).nickname ??
+                record(value).name ??
+                "",
+            ),
+          }));
+        writeFileSync(
+          join(dataDir, "groups.json"),
+          JSON.stringify({ updatedAt: new Date().toISOString(), groups }),
+          { mode: 0o600 },
+        );
+        const count = bindDirectoryAdmins(db, directory, config.botWxid);
+        if (count) log("admin_directory_bound", { count });
+      } catch {
+        log("admin_directory_pending");
+      }
+    })().finally(() => {
+      directoryRefresh = undefined;
+    });
+    return directoryRefresh;
   };
   client = new OneBotClient({
     baseUrl: required("ONEBOT_URL"),
@@ -199,7 +207,7 @@ try {
     onError: report,
     onReady: async () => {
       log("bridge_connected", { dryRun: config.dryRun });
-      await refreshAdmins();
+      await refreshDirectory();
       await app.notifyAdmins();
       void drain().catch(report);
     },
@@ -212,7 +220,7 @@ try {
           (config.allowedGroupIds.includes(m.groupId) &&
             m.mentions.includes(config.botWxid))
         )
-          void refreshAdmins().catch(report);
+          await refreshDirectory();
         if (!stopping) await app.process(m);
       })()
         .catch(report)

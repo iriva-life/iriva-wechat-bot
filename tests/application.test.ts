@@ -501,13 +501,14 @@ test("conversation snapshot is fixed before asynchronous review; later group mes
   }
 });
 
-test("host sends model wording unchanged, persists actual question metadata and supplies name/refusal context", async () => {
+test("host supplies directory nickname and explicit preferences without adding name questions", async () => {
   const { ConversationStore } = await import("../src/conversation.js");
   const history = new ConversationStore(":memory:"),
     state = new StateStore(":memory:", { adminAliases: config.adminAliases }),
     inbox = new Inbox(":memory:");
   for (const b of config.identityBindings)
     state.bindIdentity({ ...b, source: "manual", verified: true });
+  history.updateContactDirectory("wxid_bot", { users: { wxid_a: { nickname: "XM" } } });
   const delivered: Delivery[] = [];
   const app = new BotApplication({
     config,
@@ -527,7 +528,7 @@ test("host sends model wording unchanged, persists actual question metadata and 
         const context = JSON.parse(task.conversationContext!);
         if (task.messageId === "hello") {
           assert.equal(context.addressing.asked, false);
-          // A model can know the name from context even before a profile field is populated.
+          assert.equal(context.senderProfile.nickname, "XM");
           return {
             text: "XM，我们提供母语者口语训练。",
             askedAddressing: false,
@@ -535,8 +536,8 @@ test("host sends model wording unchanged, persists actual question metadata and 
         }
         if (task.messageId === "ask")
           return {
-            text: "你希望我怎么叫你？我们可以先聊你想练什么。",
-            askedAddressing: true,
+            text: "我们可以先聊你想练什么。",
+            askedAddressing: false,
           };
         if (["name", "again"].includes(task.messageId))
           assert.equal(context.addressing.name, "Ender");
@@ -568,7 +569,7 @@ test("host sends model wording unchanged, persists actual question metadata and 
     await app.process(dm("ask", "怎么开始"));
     assert.equal(
       delivered.at(-1)!.text,
-      "你希望我怎么叫你？我们可以先聊你想练什么。",
+      "我们可以先聊你想练什么。",
     );
     assert.equal(
       history.addressingFor({
@@ -576,7 +577,7 @@ test("host sends model wording unchanged, persists actual question metadata and 
         senderId: "wxid_a",
         groupId: "private:wxid_a",
       }).asked,
-      true,
+      false,
     );
     await app.process(dm("name", "叫我Ender"));
     assert.equal(delivered.at(-1)!.text, "这是模型自行组织的完整回答。");

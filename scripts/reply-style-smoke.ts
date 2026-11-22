@@ -50,6 +50,13 @@ try {
       memories: [],
       addressing: { asked: true, refused: true },
     },
+    {
+      currentSenderId: base.senderId,
+      history: [],
+      memories: [],
+      addressing: { asked: false, refused: false },
+      senderProfile: { nickname: "小蓝" },
+    },
   ];
   const outputs = [];
   for (const [i, context] of contexts.entries()) {
@@ -65,11 +72,13 @@ try {
         askedAddressing: result.askedAddressing,
       }),
     );
+    if (i === 3) assert.match(result.text, /小蓝/);
     if (i === 0) {
       assert.match(result.text, /^XM[，,]/);
       assert.equal(result.askedAddressing, false);
     }
-    if (i === 1) assert.equal(result.askedAddressing, true);
+    assert.equal(result.askedAddressing, false);
+    assert.doesNotMatch(result.text, /怎么称呼|如何称呼|怎么叫你/);
     if (i === 2) {
       assert.equal(result.askedAddressing, false);
       assert.doesNotMatch(result.text, /怎么称呼|如何称呼|怎么叫你/);
